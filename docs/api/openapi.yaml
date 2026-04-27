@@ -1,0 +1,2853 @@
+openapi: "3.0.3"
+info:
+  title: Admin Platform API
+  version: "1.0.0"
+  description: |
+    Backend API for the Admin Platform.
+    All module endpoints require **Bearer JWT** authentication and pass through a
+    four-layer guard chain: `authenticateJwt -> requireRole -> requireFeatureEnabled -> requirePermission`.
+
+    **Error envelope** (all non-2xx responses):
+    ```json
+    { "code": "<ErrorCode>", "message": "<human string>" }
+    ```
+
+    **Pagination envelope** (list endpoints):
+    ```json
+    { "items": [...], "page": 1, "limit": 50, "total": 123 }
+    ```
+  contact:
+    name: Admin Platform
+servers:
+  - url: http://localhost:7002
+    description: Local development
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: System
+  - name: eCommerce
+  - name: Payments
+  - name: CRM
+  - name: Invoices
+  - name: API Management
+  - name: Support Tickets
+  - name: File Manager
+  - name: Chat
+  - name: Mailbox
+  - name: Projects
+  - name: Tasks
+  - name: Calendar
+  - name: ToDo
+  - name: Job
+
+# ─── Security ────────────────────────────────────────────────────────
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Two-tier JWT.  Tokens are signed with role-specific secrets
+        (`JWT_SECRET_SUPER_ADMIN` / `JWT_SECRET_ADMIN`).
+        Payload: `{ sub, email, role }`.
+
+  # ─── Reusable schemas ───────────────────────────────────────────────
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [UNAUTHORIZED, FORBIDDEN, BAD_REQUEST, NOT_FOUND, FEATURE_DISABLED, INTERNAL_ERROR]
+        message:
+          type: string
+
+    PaginationMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+
+    # ── Auth ──
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            email: { type: string }
+            role: { type: string, enum: [super_admin, admin] }
+
+    SessionBootstrap:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            email: { type: string }
+            role: { type: string, enum: [super_admin, admin] }
+        permissions: { type: array, items: { type: string } }
+        features: { type: object, additionalProperties: { type: boolean } }
+        moduleCatalog:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              label: { type: string }
+
+    FeatureConfig:
+      type: object
+      additionalProperties: { type: boolean }
+
+    # ── eCommerce ──
+    Product:
+      type: object
+      properties:
+        _id: { type: string }
+        title: { type: string }
+        sku: { type: string }
+        description: { type: string }
+        priceMinor: { type: integer }
+        currency: { type: string }
+        stock: { type: integer }
+        status: { type: string, enum: [draft, active, archived] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProductPayload:
+      type: object
+      required: [title, sku, priceMinor]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        sku: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 4000 }
+        priceMinor: { type: integer, minimum: 0 }
+        currency: { type: string, minLength: 3, maxLength: 3, default: USD }
+        stock: { type: integer, minimum: 0, default: 0 }
+        status: { type: string, enum: [draft, active, archived], default: draft }
+
+    Order:
+      type: object
+      properties:
+        _id: { type: string }
+        orderNumber: { type: string }
+        customerName: { type: string }
+        customerEmail: { type: string }
+        currency: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              productId: { type: string }
+              qty: { type: integer }
+              unitPriceMinor: { type: integer }
+              lineTotalMinor: { type: integer }
+        subtotalMinor: { type: integer }
+        taxMinor: { type: integer }
+        shippingMinor: { type: integer }
+        grandTotalMinor: { type: integer }
+        status: { type: string, enum: [open, paid, shipped, completed, cancelled, refunded] }
+        paymentStatus: { type: string }
+        stockReverted: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    OrderPayload:
+      type: object
+      required: [customerName, customerEmail, items]
+      properties:
+        customerName: { type: string, minLength: 1 }
+        customerEmail: { type: string, format: email }
+        currency: { type: string, default: USD }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required: [productId, qty]
+            properties:
+              productId: { type: string }
+              qty: { type: integer, minimum: 1 }
+        taxMinor: { type: integer, minimum: 0, default: 0 }
+        shippingMinor: { type: integer, minimum: 0, default: 0 }
+
+    # ── CRM ──
+    Contact:
+      type: object
+      properties:
+        _id: { type: string }
+        displayName: { type: string }
+        primaryEmail: { type: string }
+        primaryPhone: { type: string }
+        companyName: { type: string }
+        ownerUserId: { type: string }
+        tags: { type: array, items: { type: string } }
+        notes: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ContactPayload:
+      type: object
+      required: [displayName]
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 200 }
+        primaryEmail: { type: string, format: email }
+        primaryPhone: { type: string, maxLength: 40 }
+        companyName: { type: string, maxLength: 200 }
+        ownerUserId: { type: string }
+        tags: { type: array, items: { type: string, maxLength: 40 }, maxItems: 20 }
+        notes: { type: string, maxLength: 2000 }
+
+    Pipeline:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        isDefault: { type: boolean }
+        stages:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              label: { type: string }
+              order: { type: integer }
+              isTerminalWon: { type: boolean }
+              isTerminalLost: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    Deal:
+      type: object
+      properties:
+        _id: { type: string }
+        title: { type: string }
+        contactId: { type: string }
+        pipelineId: { type: string }
+        stageKey: { type: string }
+        status: { type: string, enum: [open, won, lost] }
+        amountValue: { type: number }
+        currency: { type: string }
+        lostReason: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    # ── Invoices ──
+    Invoice:
+      type: object
+      properties:
+        _id: { type: string }
+        invoiceNumber: { type: string }
+        contactId: { type: string }
+        dealId: { type: string }
+        orderId: { type: string }
+        currency: { type: string }
+        lineItems:
+          type: array
+          items:
+            type: object
+            properties:
+              description: { type: string }
+              quantity: { type: integer }
+              unitPriceMinor: { type: integer }
+              lineTotalMinor: { type: integer }
+        subtotalMinor: { type: integer }
+        taxMinor: { type: integer }
+        discountMinor: { type: integer }
+        grandTotalMinor: { type: integer }
+        amountPaidMinor: { type: integer }
+        status: { type: string, enum: [draft, issued, sent, partially_paid, overdue, paid, void, uncollectible] }
+        dueAt: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        sentAt: { type: string, format: date-time }
+        paidAt: { type: string, format: date-time }
+        voidedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    # ── API Management ──
+    ApiKey:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        keyPrefix: { type: string }
+        keyLast4: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        scopes: { type: array, items: { type: string } }
+        expiresAt: { type: string, format: date-time }
+        revokedAt: { type: string, format: date-time }
+        createdByUserId: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    # ── Support Tickets ──
+    Ticket:
+      type: object
+      properties:
+        _id: { type: string }
+        ticketNumber: { type: string }
+        subject: { type: string }
+        description: { type: string }
+        requesterName: { type: string }
+        requesterEmail: { type: string }
+        channel: { type: string, enum: [email, chat, phone, web] }
+        priority: { type: string, enum: [low, medium, high, urgent] }
+        status: { type: string, enum: [open, in_progress, pending_customer, resolved, closed] }
+        tags: { type: array, items: { type: string } }
+        assignedToUserId: { type: string }
+        firstResponseAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+        comments:
+          type: array
+          items:
+            type: object
+            properties:
+              message: { type: string }
+              authorUserId: { type: string }
+              isInternal: { type: boolean }
+              createdAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    # ── File Manager ──
+    FileEntry:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [file, folder] }
+        parentId: { type: string, nullable: true }
+        status: { type: string, enum: [active, trashed] }
+        sizeBytes: { type: integer }
+        mimeType: { type: string }
+        extension: { type: string }
+        tags: { type: array, items: { type: string } }
+        isStarred: { type: boolean }
+        trashedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    # ── Chat ──
+    Conversation:
+      type: object
+      properties:
+        _id: { type: string }
+        title: { type: string }
+        participantUserIds: { type: array, items: { type: string } }
+        status: { type: string, enum: [active, archived] }
+        messageCount: { type: integer }
+        lastMessageAt: { type: string, format: date-time }
+        createdByUserId: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    ChatMessage:
+      type: object
+      properties:
+        _id: { type: string }
+        conversationId: { type: string }
+        senderUserId: { type: string }
+        senderEmail: { type: string }
+        content: { type: string }
+        editedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    # ── Mailbox ──
+    MailboxMessage:
+      type: object
+      properties:
+        _id: { type: string }
+        subject: { type: string }
+        body: { type: string }
+        fromAddress: { type: string }
+        fromName: { type: string }
+        toAddresses: { type: array, items: { type: string } }
+        ccAddresses: { type: array, items: { type: string } }
+        bccAddresses: { type: array, items: { type: string } }
+        folder: { type: string, enum: [inbox, sent, drafts, trash, archive] }
+        status: { type: string, enum: [unread, read, flagged] }
+        isStarred: { type: boolean }
+        sentAt: { type: string, format: date-time }
+        ownerUserId: { type: string }
+        inReplyToId: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    # ── Projects ──
+    Project:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [planning, active, on_hold, completed, archived] }
+        ownerUserId: { type: string }
+        memberUserIds: { type: array, items: { type: string } }
+        startDate: { type: string, format: date-time }
+        targetEndDate: { type: string, format: date-time }
+        actualEndDate: { type: string, format: date-time }
+        tags: { type: array, items: { type: string } }
+        priority: { type: string, enum: [low, medium, high, critical] }
+        createdAt: { type: string, format: date-time }
+
+    # ── Tasks ──
+    Task:
+      type: object
+      properties:
+        _id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        projectId: { type: string }
+        status: { type: string, enum: [todo, in_progress, review, done, cancelled] }
+        priority: { type: string, enum: [low, medium, high, critical] }
+        assigneeUserId: { type: string }
+        reporterUserId: { type: string }
+        dueDate: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        tags: { type: array, items: { type: string } }
+        estimatedHours: { type: number }
+        createdAt: { type: string, format: date-time }
+
+    # ── Calendar ──
+    CalendarEvent:
+      type: object
+      properties:
+        _id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time }
+        allDay: { type: boolean }
+        location: { type: string }
+        recurrence: { type: string, enum: [none, daily, weekly, monthly] }
+        color: { type: string }
+        attendeeUserIds: { type: array, items: { type: string } }
+        status: { type: string, enum: [scheduled, cancelled] }
+        tags: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+
+    # ── ToDo ──
+    TodoItem:
+      type: object
+      properties:
+        _id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [pending, completed] }
+        priority: { type: string, enum: [low, medium, high] }
+        dueDate: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        ownerUserId: { type: string }
+        tags: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+
+    # ── Job ──
+    JobPosting:
+      type: object
+      properties:
+        _id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        department: { type: string }
+        location: { type: string }
+        employmentType: { type: string, enum: [full_time, part_time, contract, internship] }
+        experienceLevel: { type: string, enum: [entry, mid, senior, lead] }
+        salaryMinMinor: { type: integer }
+        salaryMaxMinor: { type: integer }
+        currency: { type: string }
+        status: { type: string, enum: [draft, open, closed, filled] }
+        tags: { type: array, items: { type: string } }
+        postedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    JobApplication:
+      type: object
+      properties:
+        _id: { type: string }
+        jobId: { type: string }
+        applicantName: { type: string }
+        applicantEmail: { type: string }
+        resumeUrl: { type: string }
+        coverLetter: { type: string }
+        status: { type: string, enum: [submitted, screening, interview, offered, hired, rejected, withdrawn] }
+        notes: { type: string }
+        appliedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+  # ─── Reusable parameters ──────────────────────────────────────────
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    LimitParam:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: MongoDB ObjectId
+
+  # ─── Reusable responses ───────────────────────────────────────────
+  responses:
+    "400":
+      description: Bad request (validation error)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    "401":
+      description: Unauthorized (missing / invalid JWT)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    "403":
+      description: Forbidden (role / permission / feature disabled)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    "404":
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+# ═══════════════════════════════════════════════════════════════════════
+# PATHS
+# ═══════════════════════════════════════════════════════════════════════
+paths:
+  # ── Health ─────────────────────────────────────────────────────────
+  /api/v1/system/health:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  # ── Auth ───────────────────────────────────────────────────────────
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate and obtain JWT
+      description: "Rate-limited: 30 req / 15 min"
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: JWT and user info
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401":
+          $ref: "#/components/responses/401"
+
+  # ── System ─────────────────────────────────────────────────────────
+  /api/v1/system/session-bootstrap:
+    get:
+      tags: [System]
+      summary: Session bootstrap (user, permissions, features, catalog)
+      responses:
+        "200":
+          description: Bootstrap payload
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionBootstrap" }
+        "401": { $ref: "#/components/responses/401" }
+
+  /api/v1/system/module-catalog:
+    get:
+      tags: [System]
+      summary: List module catalog
+      responses:
+        "200":
+          description: Module list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string }
+                        label: { type: string }
+
+  /api/v1/system/feature-config:
+    get:
+      tags: [System]
+      summary: Get feature config
+      responses:
+        "200":
+          description: Feature flags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  features: { $ref: "#/components/schemas/FeatureConfig" }
+    put:
+      tags: [System]
+      summary: Update feature config (super_admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabledModules]
+              properties:
+                enabledModules:
+                  type: array
+                  items:
+                    type: string
+                    enum: [calendar, chat, mailbox, ecommerce, projects, tasks, crm, invoices, support-tickets, file-manager, todo, job, api-management]
+      responses:
+        "200":
+          description: Updated feature flags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  features: { $ref: "#/components/schemas/FeatureConfig" }
+        "403": { $ref: "#/components/responses/403" }
+
+  # ── Payment Settings ────────────────────────────────────────────────
+  /api/v1/system/payment-settings:
+    get:
+      tags: [System]
+      summary: Get payment provider settings (super_admin only)
+      responses:
+        "200":
+          description: Payment provider status and redirect config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        displayName: { type: string }
+                        configured: { type: boolean }
+                        webhookPath: { type: string }
+                  defaultSuccessUrl: { type: string }
+                  defaultCancelUrl: { type: string }
+                  allowedRedirectOrigins:
+                    type: array
+                    items: { type: string }
+                  paypalMode: { type: string }
+        "403": { $ref: "#/components/responses/403" }
+
+  # ── Dashboard KPIs ─────────────────────────────────────────────────
+  /api/v1/system/dashboard-kpis:
+    get:
+      tags: [System]
+      summary: Cross-module dashboard KPIs (admin+)
+      responses:
+        "200":
+          description: Aggregated KPI counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  openTickets: { type: integer }
+                  activeTasks: { type: integer }
+                  todayEvents: { type: integer }
+                  openDeals: { type: integer }
+                  pipelineValue: { type: number }
+                  openJobs: { type: integer }
+                  pendingApplications: { type: integer }
+
+  # ── Audit Log ──────────────────────────────────────────────────────
+  /api/v1/system/audit-log:
+    get:
+      tags: [System]
+      summary: Get audit log entries (super_admin only)
+      parameters:
+        - name: entity
+          in: query
+          schema: { type: string }
+          description: Filter by entity type
+        - $ref: "#/components/parameters/LimitParam"
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Paginated audit log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        _id: { type: string }
+                        action: { type: string }
+                        entity: { type: string }
+                        entityId: { type: string }
+                        userId: { type: string }
+                        userEmail: { type: string }
+                        before: { type: object }
+                        after: { type: object }
+                        createdAt: { type: string, format: date-time }
+                  total: { type: integer }
+        "403": { $ref: "#/components/responses/403" }
+
+  # ── System Settings ─────────────────────────────────────────────────
+  /api/v1/system/settings:
+    get:
+      tags: [System]
+      summary: Get system settings (admin+)
+      responses:
+        "200":
+          description: Current system settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timezone: { type: string, example: "UTC" }
+                  defaultCurrency: { type: string, example: "USD" }
+                  locale: { type: string, example: "en-US" }
+    put:
+      tags: [System]
+      summary: Update system settings (super_admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [timezone, defaultCurrency, locale]
+              properties:
+                timezone: { type: string }
+                defaultCurrency: { type: string, maxLength: 3 }
+                locale: { type: string }
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timezone: { type: string }
+                  defaultCurrency: { type: string }
+                  locale: { type: string }
+        "403": { $ref: "#/components/responses/403" }
+
+  # ── Global Search ──────────────────────────────────────────────────
+  /api/v1/system/search:
+    get:
+      tags: [System]
+      summary: Global cross-module search (admin+)
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+          description: Search query (min 2 chars)
+      responses:
+        "200":
+          description: Search results grouped by module
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        module: { type: string }
+                        id: { type: string }
+                        label: { type: string }
+
+  # ── CSV Export ─────────────────────────────────────────────────────
+  /api/v1/system/export/{module}:
+    parameters:
+      - name: module
+        in: path
+        required: true
+        schema: { type: string, enum: [support-tickets, tasks, projects, crm, job] }
+    get:
+      tags: [System]
+      summary: Export module data as CSV (admin+)
+      responses:
+        "200":
+          description: CSV file download
+          content:
+            text/csv:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/400" }
+
+  # ── eCommerce Products ─────────────────────────────────────────────
+  /api/v1/ecommerce/products:
+    get:
+      tags: [eCommerce]
+      summary: List products
+      responses:
+        "200":
+          description: Product list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Product" } }
+    post:
+      tags: [eCommerce]
+      summary: Create product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductPayload" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "400": { $ref: "#/components/responses/400" }
+
+  /api/v1/ecommerce/products/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    patch:
+      tags: [eCommerce]
+      summary: Update product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductPayload" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+    delete:
+      tags: [eCommerce]
+      summary: Delete product
+      responses:
+        "204": { description: Deleted }
+
+  # ── eCommerce Orders ───────────────────────────────────────────────
+  /api/v1/ecommerce/orders:
+    get:
+      tags: [eCommerce]
+      summary: List orders
+      responses:
+        "200":
+          description: Order list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Order" } }
+    post:
+      tags: [eCommerce]
+      summary: Create order (transactional stock decrement)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderPayload" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+
+  /api/v1/ecommerce/orders/{id}/transition:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    post:
+      tags: [eCommerce]
+      summary: Transition order status
+      description: |
+        State machine: open->[paid,cancelled], paid->[shipped,refunded,cancelled],
+        shipped->[completed,refunded]. Stock reverted on cancel/refund.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [open, paid, shipped, completed, cancelled, refunded] }
+      responses:
+        "200":
+          description: Transitioned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "400": { $ref: "#/components/responses/400" }
+
+  /api/v1/ecommerce/insights:
+    get:
+      tags: [eCommerce]
+      summary: eCommerce insights
+      responses:
+        "200":
+          description: Aggregated counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      products: { type: integer }
+                      orders: { type: integer }
+                      paidOrders: { type: integer }
+
+  # ── Payments ───────────────────────────────────────────────────────
+  /api/v1/ecommerce/payments/providers:
+    get:
+      tags: [Payments]
+      summary: List available payment providers
+      responses:
+        "200":
+          description: Provider availability
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        provider: { type: string, enum: [stripe, paypal, razorpay] }
+                        available: { type: boolean }
+
+  /api/v1/ecommerce/orders/{id}/payments/initiate:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    post:
+      tags: [Payments]
+      summary: Initiate payment session
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string, enum: [stripe, paypal, razorpay] }
+                successUrl: { type: string, format: uri }
+                cancelUrl: { type: string, format: uri }
+      responses:
+        "200":
+          description: Payment session created
+
+  /api/v1/ecommerce/orders/{id}/payments/confirm:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    post:
+      tags: [Payments]
+      summary: Confirm payment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string, enum: [stripe, paypal, razorpay] }
+      responses:
+        "200":
+          description: Payment confirmed
+
+  /api/v1/payments/webhooks/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string, enum: [stripe, paypal, razorpay] }
+    post:
+      tags: [Payments]
+      summary: Payment provider webhook (raw body, signature verified)
+      security: []
+      description: "Rate-limited: 180 req/min. Raw body for signature verification."
+      responses:
+        "200":
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received: { type: boolean }
+                  processed: { type: boolean }
+
+  # ── CRM ────────────────────────────────────────────────────────────
+  /api/v1/crm/contacts:
+    get:
+      tags: [CRM]
+      summary: List contacts
+      responses:
+        "200":
+          description: Contact list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Contact" } }
+    post:
+      tags: [CRM]
+      summary: Create contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactPayload" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Contact" }
+
+  /api/v1/crm/contacts/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [CRM]
+      summary: Update contact
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContactPayload" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Contact" }
+    delete:
+      tags: [CRM]
+      summary: Delete contact (fails if linked to deals)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/crm/pipelines:
+    get:
+      tags: [CRM]
+      summary: List pipelines
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Pipeline" } }
+    post:
+      tags: [CRM]
+      summary: Create pipeline
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pipeline" }
+
+  /api/v1/crm/pipelines/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [CRM]
+      summary: Update pipeline
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pipeline" }
+
+  /api/v1/crm/deals:
+    get:
+      tags: [CRM]
+      summary: List deals
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Deal" } }
+    post:
+      tags: [CRM]
+      summary: Create deal
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deal" }
+
+  /api/v1/crm/deals/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [CRM]
+      summary: Update deal (excludes stage changes)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deal" }
+
+  /api/v1/crm/deals/{id}/stage:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [CRM]
+      summary: Transition deal stage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stageKey]
+              properties:
+                stageKey: { type: string }
+                lostReason: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deal" }
+
+  /api/v1/crm/insights:
+    get:
+      tags: [CRM]
+      summary: CRM insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      contacts: { type: integer }
+                      openDeals: { type: integer }
+                      wonDeals: { type: integer }
+                      lostDeals: { type: integer }
+
+  # ── Invoices ───────────────────────────────────────────────────────
+  /api/v1/invoices/documents:
+    get:
+      tags: [Invoices]
+      summary: List invoices
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Invoice" } }
+    post:
+      tags: [Invoices]
+      summary: Create invoice
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+
+  /api/v1/invoices/documents/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [Invoices]
+      summary: Update invoice (draft only)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+
+  /api/v1/invoices/documents/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Invoices]
+      summary: Transition invoice status
+      description: |
+        State machine: draft->[issued,void], issued->[sent,void],
+        sent->[partially_paid,paid,overdue], etc.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [draft, issued, sent, partially_paid, overdue, paid, void, uncollectible] }
+                amountPaidMinor: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+
+  /api/v1/invoices/insights:
+    get:
+      tags: [Invoices]
+      summary: Invoice insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      draft: { type: integer }
+                      sent: { type: integer }
+                      paid: { type: integer }
+                      overdue: { type: integer }
+
+  # ── API Management ─────────────────────────────────────────────────
+  /api/v1/api-management/keys:
+    get:
+      tags: [API Management]
+      summary: List API keys (excludes hash)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ApiKey" } }
+    post:
+      tags: [API Management]
+      summary: Create API key (returns plaintext once)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { $ref: "#/components/schemas/ApiKey" }
+                  plaintextKey: { type: string }
+
+  /api/v1/api-management/keys/{id}/revoke:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [API Management]
+      summary: Revoke API key
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKey" }
+
+  /api/v1/api-management/keys/{id}/regenerate:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [API Management]
+      summary: Regenerate API key (revokes old, creates new)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { $ref: "#/components/schemas/ApiKey" }
+                  plaintextKey: { type: string }
+
+  /api/v1/api-management/keys/{id}/events:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [API Management]
+      summary: Audit events for key
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { type: object } }
+
+  /api/v1/api-management/insights:
+    get:
+      tags: [API Management]
+      summary: API Management insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      totalKeys: { type: integer }
+                      activeKeys: { type: integer }
+                      revokedKeys: { type: integer }
+                      expiringSoon: { type: integer }
+
+  # ── Support Tickets ────────────────────────────────────────────────
+  /api/v1/support-tickets/tickets:
+    get:
+      tags: [Support Tickets]
+      summary: List tickets (paginated)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
+    post:
+      tags: [Support Tickets]
+      summary: Create ticket
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+
+  /api/v1/support-tickets/tickets/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [Support Tickets]
+      summary: Update ticket (not closed)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+    delete:
+      tags: [Support Tickets]
+      summary: Delete ticket (closed only)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/support-tickets/tickets/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Support Tickets]
+      summary: Transition ticket status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [open, in_progress, pending_customer, resolved, closed] }
+                note: { type: string, maxLength: 1000 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+
+  /api/v1/support-tickets/tickets/{id}/comments:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Support Tickets]
+      summary: Add comment (internal requires super_admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, minLength: 1, maxLength: 4000 }
+                isInternal: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+
+  /api/v1/support-tickets/insights:
+    get:
+      tags: [Support Tickets]
+      summary: Ticket insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      open: { type: integer }
+                      inProgress: { type: integer }
+                      pendingCustomer: { type: integer }
+                      resolved: { type: integer }
+                      closed: { type: integer }
+                      urgentOpen: { type: integer }
+
+  # ── File Manager ───────────────────────────────────────────────────
+  /api/v1/file-manager/entries:
+    get:
+      tags: [File Manager]
+      summary: List entries (files/folders)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - { name: parentId, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [active, trashed, all] } }
+        - { name: kind, in: query, schema: { type: string, enum: [file, folder, all] } }
+        - { name: q, in: query, schema: { type: string }, description: Search by name }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/FileEntry" } }
+
+  /api/v1/file-manager/folders:
+    post:
+      tags: [File Manager]
+      summary: Create folder
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileEntry" }
+
+  /api/v1/file-manager/files:
+    post:
+      tags: [File Manager]
+      summary: Create file entry
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileEntry" }
+
+  /api/v1/file-manager/entries/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [File Manager]
+      summary: Update entry
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileEntry" }
+    delete:
+      tags: [File Manager]
+      summary: Permanently delete (trashed only)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/file-manager/entries/{id}/move:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [File Manager]
+      summary: Move entry to different parent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetParentId: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileEntry" }
+
+  /api/v1/file-manager/entries/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [File Manager]
+      summary: Trash or restore entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [active, trashed] }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileEntry" }
+
+  /api/v1/file-manager/insights:
+    get:
+      tags: [File Manager]
+      summary: File Manager insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      totalFiles: { type: integer }
+                      totalFolders: { type: integer }
+                      trashedEntries: { type: integer }
+                      starredEntries: { type: integer }
+                      totalSizeBytes: { type: integer }
+
+  # ── Chat ───────────────────────────────────────────────────────────
+  /api/v1/chat/conversations:
+    get:
+      tags: [Chat]
+      summary: List conversations (participant-scoped)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/Conversation" } }
+    post:
+      tags: [Chat]
+      summary: Create conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, participantUserIds]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+                participantUserIds: { type: array, items: { type: string }, minItems: 1, maxItems: 100 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+
+  /api/v1/chat/conversations/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Chat]
+      summary: Get conversation (must be participant)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+    patch:
+      tags: [Chat]
+      summary: Update conversation title
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+
+  /api/v1/chat/conversations/{id}/archive:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Chat]
+      summary: Archive conversation
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+
+  /api/v1/chat/conversations/{id}/messages:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Chat]
+      summary: List messages in conversation
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/ChatMessage" } }
+    post:
+      tags: [Chat]
+      summary: Send message (active conversations only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, minLength: 1, maxLength: 4000 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatMessage" }
+
+  /api/v1/chat/conversations/{id}/stream:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Chat]
+      summary: SSE stream for real-time messages (participant-scoped)
+      description: |
+        Server-Sent Events endpoint. Events: `message`, `message_edited`, `message_deleted`.
+        30s heartbeat. Native EventSource cannot set headers, so pass JWT via `?token=`.
+        Requires participant access or super_admin.
+      parameters:
+        - name: token
+          in: query
+          schema: { type: string }
+          description: JWT token (alternative to Authorization header for SSE clients)
+      responses:
+        "200":
+          description: SSE stream established
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "403": { $ref: "#/components/responses/403" }
+
+  /api/v1/chat/messages/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [Chat]
+      summary: Edit own message
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatMessage" }
+    delete:
+      tags: [Chat]
+      summary: Delete own message
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/chat/insights:
+    get:
+      tags: [Chat]
+      summary: Chat insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      totalConversations: { type: integer }
+                      activeConversations: { type: integer }
+                      archivedConversations: { type: integer }
+                      totalMessages: { type: integer }
+
+  # ── Mailbox ────────────────────────────────────────────────────────
+  /api/v1/mailbox/messages:
+    get:
+      tags: [Mailbox]
+      summary: List messages (owner-scoped)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - { name: folder, in: query, schema: { type: string, enum: [inbox, sent, drafts, trash, archive], default: inbox } }
+        - { name: allUsers, in: query, schema: { type: boolean }, description: super_admin only }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/MailboxMessage" } }
+    post:
+      tags: [Mailbox]
+      summary: Compose message (rate-limited 60/min)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MailboxMessage" }
+
+  /api/v1/mailbox/messages/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Mailbox]
+      summary: Get message (auto-marks inbox as read)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MailboxMessage" }
+    patch:
+      tags: [Mailbox]
+      summary: Update draft message
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MailboxMessage" }
+    delete:
+      tags: [Mailbox]
+      summary: Delete (trash first, then permanent)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/mailbox/messages/{id}/send:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Mailbox]
+      summary: Send draft
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MailboxMessage" }
+
+  /api/v1/mailbox/messages/{id}/move:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Mailbox]
+      summary: Move to folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folder]
+              properties:
+                folder: { type: string, enum: [inbox, sent, drafts, trash, archive] }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MailboxMessage" }
+
+  /api/v1/mailbox/messages/{id}/star:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Mailbox]
+      summary: Toggle star
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MailboxMessage" }
+
+  /api/v1/mailbox/messages/{id}/read:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Mailbox]
+      summary: Mark as read
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MailboxMessage" }
+
+  /api/v1/mailbox/insights:
+    get:
+      tags: [Mailbox]
+      summary: Mailbox insights (owner-scoped)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      inbox: { type: integer }
+                      sent: { type: integer }
+                      drafts: { type: integer }
+                      trash: { type: integer }
+                      archive: { type: integer }
+                      unread: { type: integer }
+                      starred: { type: integer }
+
+  # ── Projects ───────────────────────────────────────────────────────
+  /api/v1/projects/projects:
+    get:
+      tags: [Projects]
+      summary: List projects (paginated)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - { name: status, in: query, schema: { type: string, enum: [planning, active, on_hold, completed, archived] } }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/Project" } }
+    post:
+      tags: [Projects]
+      summary: Create project (ownerUserId auto-set)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+
+  /api/v1/projects/projects/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Projects]
+      summary: Get project
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+    patch:
+      tags: [Projects]
+      summary: Update project (not archived)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+    delete:
+      tags: [Projects]
+      summary: Delete project (archived only)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/projects/projects/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Projects]
+      summary: Transition project status
+      description: |
+        planning->[active,archived], active->[on_hold,completed,archived],
+        on_hold->[active,archived], completed->[archived].
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [planning, active, on_hold, completed, archived] }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+
+  /api/v1/projects/projects/{id}/members:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Projects]
+      summary: Add member (atomic $addToSet)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+
+  /api/v1/projects/projects/{id}/members/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+      - { name: userId, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [Projects]
+      summary: Remove member (atomic $pull)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+
+  /api/v1/projects/insights:
+    get:
+      tags: [Projects]
+      summary: Project insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      planning: { type: integer }
+                      active: { type: integer }
+                      onHold: { type: integer }
+                      completed: { type: integer }
+                      archived: { type: integer }
+                      totalProjects: { type: integer }
+
+  # ── Tasks ──────────────────────────────────────────────────────────
+  /api/v1/tasks/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks (paginated, filterable)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - { name: status, in: query, schema: { type: string, enum: [todo, in_progress, review, done, cancelled] } }
+        - { name: projectId, in: query, schema: { type: string } }
+        - { name: assigneeUserId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/Task" } }
+    post:
+      tags: [Tasks]
+      summary: Create task (reporterUserId auto-set)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+
+  /api/v1/tasks/tasks/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Tasks]
+      summary: Get task
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+    patch:
+      tags: [Tasks]
+      summary: Update task
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+    delete:
+      tags: [Tasks]
+      summary: Delete task (done/cancelled only)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/tasks/tasks/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Tasks]
+      summary: Transition task status
+      description: |
+        todo->[in_progress,cancelled], in_progress->[review,todo,cancelled],
+        review->[done,in_progress,cancelled], done->[todo], cancelled->[todo].
+        Sets/clears completedAt automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [todo, in_progress, review, done, cancelled] }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+
+  /api/v1/tasks/insights:
+    get:
+      tags: [Tasks]
+      summary: Task insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      todo: { type: integer }
+                      inProgress: { type: integer }
+                      review: { type: integer }
+                      done: { type: integer }
+                      cancelled: { type: integer }
+                      totalTasks: { type: integer }
+                      overdue: { type: integer }
+
+  # ── Calendar ───────────────────────────────────────────────────────
+  /api/v1/calendar/events:
+    get:
+      tags: [Calendar]
+      summary: List events (date-range filterable)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: status, in: query, schema: { type: string, enum: [scheduled, cancelled] } }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/CalendarEvent" } }
+    post:
+      tags: [Calendar]
+      summary: Create event (endDate >= startDate enforced)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalendarEvent" }
+
+  /api/v1/calendar/events/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Calendar]
+      summary: Get event
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalendarEvent" }
+    patch:
+      tags: [Calendar]
+      summary: Update event
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalendarEvent" }
+    delete:
+      tags: [Calendar]
+      summary: Delete event (cancelled only)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/calendar/events/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Calendar]
+      summary: Cancel event
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalendarEvent" }
+
+  /api/v1/calendar/insights:
+    get:
+      tags: [Calendar]
+      summary: Calendar insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      scheduled: { type: integer }
+                      cancelled: { type: integer }
+                      upcoming: { type: integer }
+                      past: { type: integer }
+                      totalEvents: { type: integer }
+
+  # ── ToDo ───────────────────────────────────────────────────────────
+  /api/v1/todo/items:
+    get:
+      tags: [ToDo]
+      summary: List todos (owner-scoped)
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - { name: status, in: query, schema: { type: string, enum: [pending, completed] } }
+        - { name: allUsers, in: query, schema: { type: boolean }, description: super_admin only }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/TodoItem" } }
+    post:
+      tags: [ToDo]
+      summary: Create todo (ownerUserId auto-set)
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TodoItem" }
+
+  /api/v1/todo/items/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [ToDo]
+      summary: Get todo (owner-scoped)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TodoItem" }
+    patch:
+      tags: [ToDo]
+      summary: Update todo
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TodoItem" }
+    delete:
+      tags: [ToDo]
+      summary: Delete todo
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/todo/items/{id}/complete:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [ToDo]
+      summary: Mark as complete
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TodoItem" }
+
+  /api/v1/todo/items/{id}/reopen:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [ToDo]
+      summary: Reopen todo
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TodoItem" }
+
+  /api/v1/todo/insights:
+    get:
+      tags: [ToDo]
+      summary: ToDo insights (owner-scoped)
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      pending: { type: integer }
+                      completed: { type: integer }
+                      overdue: { type: integer }
+                      totalItems: { type: integer }
+
+  # ── Job ────────────────────────────────────────────────────────────
+  /api/v1/job/postings:
+    get:
+      tags: [Job]
+      summary: List job postings
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/JobPosting" } }
+    post:
+      tags: [Job]
+      summary: Create job posting
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobPosting" }
+
+  /api/v1/job/postings/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Job]
+      summary: Get posting
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobPosting" }
+    patch:
+      tags: [Job]
+      summary: Update posting
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobPosting" }
+    delete:
+      tags: [Job]
+      summary: Delete posting (draft only)
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/job/postings/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Job]
+      summary: Transition posting status
+      description: "draft->[open], open->[closed,filled], closed->[open]."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [open, closed, filled] }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobPosting" }
+
+  /api/v1/job/postings/{id}/applications:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Job]
+      summary: List applications for posting
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginationMeta"
+                  - type: object
+                    properties:
+                      items: { type: array, items: { $ref: "#/components/schemas/JobApplication" } }
+    post:
+      tags: [Job]
+      summary: Submit application (open postings only, unique email)
+      description: "Rate-limited: 60 req/min"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobApplication" }
+
+  /api/v1/job/applications/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    patch:
+      tags: [Job]
+      summary: Update application notes
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobApplication" }
+    delete:
+      tags: [Job]
+      summary: Delete application
+      responses:
+        "204": { description: Deleted }
+
+  /api/v1/job/applications/{id}/transition:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Job]
+      summary: Transition application status
+      description: |
+        submitted->[screening,rejected,withdrawn],
+        screening->[interview,rejected,withdrawn],
+        interview->[offered,rejected,withdrawn],
+        offered->[hired,rejected,withdrawn].
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [screening, interview, offered, hired, rejected, withdrawn] }
+                notes: { type: string, maxLength: 2000 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobApplication" }
+
+  /api/v1/job/insights:
+    get:
+      tags: [Job]
+      summary: Job insights
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      draftPostings: { type: integer }
+                      openPostings: { type: integer }
+                      closedPostings: { type: integer }
+                      filledPostings: { type: integer }
+                      totalApplications: { type: integer }
+                      submittedApplications: { type: integer }
+                      hiredApplications: { type: integer }
+
+  # Phase I: Product Depth endpoints
+
+  /api/v1/system/branding:
+    get:
+      tags: [System]
+      summary: Get tenant branding
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  companyName: { type: string }
+                  logoUrl: { type: string }
+                  primaryColor: { type: string }
+    put:
+      tags: [System]
+      summary: Update tenant branding (super_admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [companyName, primaryColor]
+              properties:
+                companyName: { type: string, maxLength: 100 }
+                logoUrl: { type: string, maxLength: 2048 }
+                primaryColor: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  companyName: { type: string }
+                  logoUrl: { type: string }
+                  primaryColor: { type: string }
+
+  /api/v1/system/custom-roles:
+    get:
+      tags: [System]
+      summary: List custom roles (super_admin)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        permissions: { type: array, items: { type: string } }
+    post:
+      tags: [System]
+      summary: Create a custom role (super_admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, permissions]
+              properties:
+                name: { type: string, maxLength: 60 }
+                permissions: { type: array, items: { type: string } }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  permissions: { type: array, items: { type: string } }
+
+  /api/v1/system/custom-roles/{id}:
+    put:
+      tags: [System]
+      summary: Update a custom role (super_admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, permissions]
+              properties:
+                name: { type: string }
+                permissions: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  permissions: { type: array, items: { type: string } }
+    delete:
+      tags: [System]
+      summary: Delete a custom role (super_admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+
+  /api/v1/system/users/{userId}/custom-role:
+    put:
+      tags: [System]
+      summary: Assign custom role to user (super_admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customRoleId]
+              properties:
+                customRoleId: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated: { type: boolean }
+
+  /api/v1/system/notifications:
+    get:
+      tags: [System]
+      summary: List notifications for current user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        body: { type: string }
+                        type: { type: string, enum: [info, warning, error, success] }
+                        read: { type: boolean }
+                        link: { type: string }
+                        createdAt: { type: string, format: date-time }
+                  total: { type: integer }
+
+  /api/v1/system/notifications/unread-count:
+    get:
+      tags: [System]
+      summary: Get unread notification count
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unreadCount: { type: integer }
+
+  /api/v1/system/notifications/{id}/read:
+    patch:
+      tags: [System]
+      summary: Mark notification as read
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  read: { type: boolean }
+
+  /api/v1/system/notifications/mark-all-read:
+    post:
+      tags: [System]
+      summary: Mark all notifications as read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  marked: { type: integer }
+
+  /api/v1/system/gdpr-export:
+    get:
+      tags: [System]
+      summary: GDPR data export for current user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exportedAt: { type: string, format: date-time }
+                  user: { type: object }
+                  supportTickets: { type: array, items: { type: object } }
+                  tasks: { type: array, items: { type: object } }
+                  calendarEvents: { type: array, items: { type: object } }
+                  todoItems: { type: array, items: { type: object } }
+                  projects: { type: array, items: { type: object } }
+                  crmContacts: { type: array, items: { type: object } }
+                  crmDeals: { type: array, items: { type: object } }
+
+  /api/v1/system/import/{module}:
+    post:
+      tags: [System]
+      summary: Import CSV data into module (super_admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: module
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [csv]
+              properties:
+                csv: { type: string }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported: { type: integer }
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        row: { type: integer }
+                        message: { type: string }

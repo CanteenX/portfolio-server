@@ -1,0 +1,926 @@
+/**
+ * WhatsApp Bulk Messaging Handlers
+ *
+ * Handlers for bulk messaging operations - the core of WhatsApp message sending.
+ * Manages audience targeting, message queueing, progress tracking, and analytics.
+ *
+ * Key Responsibilities:
+ * - Create and manage bulk messaging configurations
+ * - Build user audiences from filters
+ * - Enqueue messages to RabbitMQ for worker processing
+ * - Track message delivery stats in real-time
+ * - Handle retry logic for failed messages
+ * - Provide analytics and reporting
+ *
+ * Database Collections:
+ * - BM-BulkMessagings: Bulk messaging configurations
+ * - BM-MessageQueue: Individual messages awaiting processing
+ * - BM-Campaigns: Parent campaigns
+ * - BM-WhatsAppTemplates: Message templates
+ * - BM-AudienceTypes: Reusable audience segments
+ *
+ * External Dependencies:
+ * - RabbitMQ: Message queue for async processing
+ * - Meta Graph API: Direct sending for test messages
+ *
+ * TODO: CHANGE THIS - Update user model references for audience building
+ * TODO: CHANGE THIS - Update buildAudienceQuery() to match your user schema
+ */
+
+import { ERROR_CODES } from "@admin-platform/shared-types";
+import type { Request, Response, NextFunction } from "express";
+import mongoose from "mongoose";
+import { z } from "zod";
+import type { AuthenticatedRequest } from "../../core/auth/auth.types";
+import { AppError } from "../../core/errors/app-error";
+import { env } from "../../config/env";
+import { logger } from "../../core/logging/logger";
+import {
+  BulkMessagingModel,
+  MessageQueueModel,
+  CampaignModel,
+  WhatsAppTemplateModel,
+  AudienceTypeModel,
+} from "./models";
+
+// ═══════════════════════════════════════════════════════════
+// VALIDATION SCHEMAS
+// ═══════════════════════════════════════════════════════════
+
+const createBulkMessagingSchema = z.object({
+  name: z.string().min(1).max(200).trim(),
+  templateId: z.string().regex(/^[0-9a-fA-F]{24}$/),
+  audienceFilter: z.record(z.any()).optional(),
+  variableOverrides: z.array(z.object({
+    position: z.number().int().min(1),
+    customValue: z.string().optional(),
+    fieldPath: z.string().optional(),
+  })).optional(),
+  scheduledFor: z.coerce.date().optional().nullable(),
+});
+
+const updateBulkMessagingSchema = z.object({
+  name: z.string().min(1).max(200).trim().optional(),
+  templateId: z.string().regex(/^[0-9a-fA-F]{24}$/).optional(),
+  audienceFilter: z.record(z.any()).optional(),
+  variableOverrides: z.array(z.object({
+    position: z.number().int().min(1),
+    customValue: z.string().optional(),
+    fieldPath: z.string().optional(),
+  })).optional(),
+  scheduledFor: z.coerce.date().optional().nullable(),
+});
+
+const listBulkMessagingsSchema = z.object({
+  skip: z.coerce.number().int().min(0).default(0),
+  per_page: z.coerce.number().int().min(1).max(100).default(10),
+  sorton: z.string().optional(),
+  sortdir: z.enum(["asc", "desc"]).optional(),
+  match: z.string().max(200).optional(),
+  status: z.enum(["draft", "queued", "processing", "paused", "completed", "failed"]).optional(),
+});
+
+const getFailedMessagesSchema = z.object({
+  skip: z.coerce.number().int().min(0).default(0),
+  per_page: z.coerce.number().int().min(1).max(100).default(20),
+  errorCategory: z.enum(["permanent", "policy", "rate_limit", "transient"]).optional(),
+  match: z.string().max(50).optional(),
+});
+
+const previewAudienceSchema = z.object({
+  audienceFilter: z.record(z.any()),
+});
+
+const testSendSchema = z.object({
+  templateId: z.string().regex(/^[0-9a-fA-F]{24}$/),
+  variableOverrides: z.array(z.object({
+    position: z.number().int().min(1),
+    customValue: z.string(),
+  })).optional(),
+  testPhoneNumbers: z.array(z.string().min(10).max(15)).min(1).max(5),
+});
+
+const analyticsQuerySchema = z.object({
+  campaignId: z.string().regex(/^[0-9a-fA-F]{24}$/).optional(),
+  startDate: z.coerce.date().optional(),
+  endDate: z.coerce.date().optional(),
+});
+
+// ═══════════════════════════════════════════════════════════
+// UTILITY FUNCTIONS
+// ═══════════════════════════════════════════════════════════
+
+function ensureValidObjectId(id: string): void {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid ID format");
+  }
+}
+
+/**
+ * Normalize phone number to 91XXXXXXXXXX format (India)
+ * TODO: CHANGE THIS - Update for other country codes if needed
+ */
+function normalizePhone(phone: string): string {
+  let cleaned = phone.replace(/[\s\-\(\)\+]/g, "");
+  if (cleaned.startsWith("0")) cleaned = cleaned.slice(1);
+  if (cleaned.length === 10) cleaned = "91" + cleaned;
+  if (cleaned.startsWith("91") && cleaned.length === 12) return cleaned;
+  return cleaned;
+}
+
+/**
+ * Build audience query from filter
+ * TODO: CHANGE THIS - Implement your actual user aggregation pipeline
+ * This is a placeholder that needs to be replaced with your user schema
+ */
+function buildAudienceQuery(audienceFilter: any): any[] {
+  logger.warn("[Bulk Messaging] Using placeholder buildAudienceQuery - implement for your user schema");
+
+  // Placeholder aggregation pipeline
+  // Replace this with actual implementation matching your user model
+  const pipeline: any[] = [
+    { $match: { isActive: true } },
+  ];
+
+  // TODO: Add your user filtering logic here based on audienceFilter
+  // Example fields you might filter:
+  // - userTypes: filter by user.type
+  // - cityIds: filter by user.cityId
+  // - stateIds: filter by user.stateId
+  // - registeredBefore/After: filter by user.createdAt
+  // - etc.
+
+  return pipeline;
+}
+
+/**
+ * Publish message to RabbitMQ
+ * TODO: CHANGE THIS - Implement your actual RabbitMQ publishing logic
+ */
+async function publishToRabbitMQ(routingKey: string, payload: any): Promise<void> {
+  logger.info(`[RabbitMQ] Publishing to ${routingKey}`, { payload });
+
+  // TODO: Implement actual RabbitMQ publishing
+  // This is a placeholder for now
+  // You'll need to:
+  // 1. Install amqplib: pnpm add amqplib
+  // 2. Create connection to RABBITMQ_URL
+  // 3. Publish to exchange with routing key
+
+  // For now, just log
+  logger.warn("[RabbitMQ] Placeholder - implement actual publishing");
+}
+
+// ═══════════════════════════════════════════════════════════
+// CRUD OPERATIONS
+// ═══════════════════════════════════════════════════════════
+
+export const createBulkMessaging = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.campaignId);
+    const payload = createBulkMessagingSchema.parse(req.body ?? {});
+
+    // Verify campaign exists
+    const campaign = await CampaignModel.findById(req.params.campaignId);
+    if (!campaign) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Campaign not found");
+    }
+
+    // Verify template exists
+    const template = await WhatsAppTemplateModel.findById(payload.templateId);
+    if (!template) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Template not found");
+    }
+
+    const bulkMessaging = await BulkMessagingModel.create({
+      campaignId: req.params.campaignId,
+      name: payload.name,
+      templateId: payload.templateId,
+      audienceFilter: payload.audienceFilter || {},
+      variableOverrides: payload.variableOverrides || [],
+      scheduledFor: payload.scheduledFor || null,
+      createdBy: new mongoose.Types.ObjectId(req.user!.id),
+      status: "draft",
+      stats: {
+        totalRecipients: 0,
+        queued: 0,
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        failed: 0,
+      },
+    });
+
+    logger.info("[Bulk Messaging] Created bulk messaging", {
+      bulkMessagingId: bulkMessaging._id,
+      campaignId: campaign._id,
+      templateId: template._id,
+    });
+
+    res.status(201).json(bulkMessaging.toObject());
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid bulk messaging data"));
+      return;
+    }
+    next(error);
+  }
+};
+
+export const updateBulkMessaging = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+    const payload = updateBulkMessagingSchema.parse(req.body ?? {});
+
+    const bulkMessaging = await BulkMessagingModel.findById(req.params.id);
+    if (!bulkMessaging) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Bulk messaging not found");
+    }
+
+    if (bulkMessaging.status === "processing") {
+      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Cannot edit while processing. Pause it first.");
+    }
+
+    // Verify template if being updated
+    if (payload.templateId) {
+      const templateExists = await WhatsAppTemplateModel.exists({ _id: payload.templateId });
+      if (!templateExists) {
+        throw new AppError(404, ERROR_CODES.NOT_FOUND, "Template not found");
+      }
+      bulkMessaging.templateId = new mongoose.Types.ObjectId(payload.templateId);
+    }
+
+    // Update fields
+    if (payload.name) bulkMessaging.name = payload.name;
+    if (payload.audienceFilter !== undefined) bulkMessaging.audienceFilter = payload.audienceFilter;
+    if (payload.variableOverrides !== undefined) bulkMessaging.variableOverrides = payload.variableOverrides;
+    if (payload.scheduledFor !== undefined) bulkMessaging.scheduledFor = payload.scheduledFor || null;
+
+    // If editing non-draft, reset to draft and clear queue
+    if (bulkMessaging.status !== "draft") {
+      bulkMessaging.status = "draft";
+      await MessageQueueModel.deleteMany({ bulkMessagingId: bulkMessaging._id });
+      bulkMessaging.stats = {
+        totalRecipients: 0,
+        queued: 0,
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        failed: 0,
+      };
+    }
+
+    await bulkMessaging.save();
+
+    logger.info("[Bulk Messaging] Updated bulk messaging", {
+      bulkMessagingId: bulkMessaging._id,
+      updates: Object.keys(payload),
+    });
+
+    res.status(200).json(bulkMessaging.toObject());
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid update data"));
+      return;
+    }
+    next(error);
+  }
+};
+
+export const deleteBulkMessaging = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+
+    const bulkMessaging = await BulkMessagingModel.findById(req.params.id);
+    if (!bulkMessaging) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Bulk messaging not found");
+    }
+
+    if (bulkMessaging.status === "processing") {
+      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Cannot delete while processing. Pause it first.");
+    }
+
+    // Delete associated message queue entries
+    await MessageQueueModel.deleteMany({ bulkMessagingId: bulkMessaging._id });
+    await BulkMessagingModel.findByIdAndDelete(req.params.id);
+
+    logger.info("[Bulk Messaging] Deleted bulk messaging", {
+      bulkMessagingId: bulkMessaging._id,
+      deletedQueueCount: await MessageQueueModel.countDocuments({ bulkMessagingId: bulkMessaging._id }),
+    });
+
+    res.status(200).json({ message: "Bulk messaging deleted" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listBulkMessagings = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.campaignId);
+    const params = listBulkMessagingsSchema.parse(req.body ?? {});
+
+    const pipeline: any[] = [];
+
+    // Base match by campaign
+    const baseMatch: any = { campaignId: new mongoose.Types.ObjectId(req.params.campaignId) };
+    if (params.status) baseMatch.status = params.status;
+    pipeline.push({ $match: baseMatch });
+
+    // Search filter
+    if (params.match) {
+      pipeline.push({
+        $match: { name: { $regex: params.match, $options: "i" } },
+      });
+    }
+
+    // Lookup template
+    pipeline.push({
+      $lookup: {
+        from: "BM-WhatsAppTemplates",
+        localField: "templateId",
+        foreignField: "_id",
+        as: "template",
+      },
+    });
+    pipeline.push({ $unwind: { path: "$template", preserveNullAndEmptyArrays: true } });
+
+    // Sort
+    const sortField = params.sorton || "createdAt";
+    const sortDirection = params.sortdir === "asc" ? 1 : -1;
+    pipeline.push({ $sort: { [sortField]: sortDirection } });
+
+    // Pagination
+    pipeline.push({
+      $facet: {
+        stage1: [{ $group: { _id: null, count: { $sum: 1 } } }],
+        stage2: [{ $skip: params.skip }, { $limit: params.per_page }],
+      },
+    });
+    pipeline.push({ $unwind: { path: "$stage1", preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $project: {
+        count: { $ifNull: ["$stage1.count", 0] },
+        data: "$stage2",
+      },
+    });
+
+    const result = await BulkMessagingModel.aggregate(pipeline);
+    const response = result.length > 0 ? result[0] : { count: 0, data: [] };
+
+    res.status(200).json(response);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid filter parameters"));
+      return;
+    }
+    next(error);
+  }
+};
+
+export const getBulkMessagingById = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+
+    const bulkMessaging = (await BulkMessagingModel.findById(req.params.id)
+      .populate("templateId", "name metaTemplateName bodyText variables")
+      .populate("campaignId", "name")
+      .lean()) as any;
+
+    if (!bulkMessaging) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Bulk messaging not found");
+    }
+
+    res.status(200).json(bulkMessaging);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+// STATE CONTROL (Start/Pause/Resume)
+// ═══════════════════════════════════════════════════════════
+
+export const startBulkMessaging = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+
+    const bulkMessaging = await BulkMessagingModel.findById(req.params.id);
+    if (!bulkMessaging) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Bulk messaging not found");
+    }
+
+    if (bulkMessaging.status !== "draft") {
+      throw new AppError(
+        400,
+        ERROR_CODES.BAD_REQUEST,
+        `Cannot start bulk messaging with status "${bulkMessaging.status}". Only "draft" can be started.`
+      );
+    }
+
+    // Check if scheduled for future
+    if (bulkMessaging.scheduledFor && new Date(bulkMessaging.scheduledFor) > new Date()) {
+      await BulkMessagingModel.findByIdAndUpdate(bulkMessaging._id, { status: "queued" });
+
+      logger.info("[Bulk Messaging] Scheduled for later", {
+        bulkMessagingId: bulkMessaging._id,
+        scheduledFor: bulkMessaging.scheduledFor,
+      });
+
+      res.status(200).json({
+        message: `Bulk messaging scheduled for ${bulkMessaging.scheduledFor}`,
+        scheduled: true,
+        scheduledFor: bulkMessaging.scheduledFor,
+      });
+      return;
+    }
+
+    // Publish to RabbitMQ for worker processing
+    await BulkMessagingModel.findByIdAndUpdate(bulkMessaging._id, { status: "processing" });
+    await publishToRabbitMQ("whatsapp.bulk.start", {
+      bulkMessagingId: bulkMessaging._id.toString(),
+    });
+
+    logger.info("[Bulk Messaging] Started bulk messaging", {
+      bulkMessagingId: bulkMessaging._id,
+    });
+
+    res.status(200).json({
+      message: "Bulk messaging started successfully",
+      bulkMessagingId: bulkMessaging._id,
+      status: "processing",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const pauseBulkMessaging = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+
+    const bulkMessaging = await BulkMessagingModel.findById(req.params.id);
+    if (!bulkMessaging) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Bulk messaging not found");
+    }
+
+    if (bulkMessaging.status !== "processing") {
+      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Can only pause a processing bulk messaging");
+    }
+
+    await BulkMessagingModel.findByIdAndUpdate(bulkMessaging._id, { status: "paused" });
+
+    logger.info("[Bulk Messaging] Paused bulk messaging", {
+      bulkMessagingId: bulkMessaging._id,
+    });
+
+    res.status(200).json({ message: "Bulk messaging paused" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resumeBulkMessaging = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+
+    const bulkMessaging = await BulkMessagingModel.findById(req.params.id);
+    if (!bulkMessaging) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Bulk messaging not found");
+    }
+
+    if (bulkMessaging.status !== "paused") {
+      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Can only resume a paused bulk messaging");
+    }
+
+    await BulkMessagingModel.findByIdAndUpdate(bulkMessaging._id, { status: "processing" });
+
+    logger.info("[Bulk Messaging] Resumed bulk messaging", {
+      bulkMessagingId: bulkMessaging._id,
+    });
+
+    res.status(200).json({ message: "Bulk messaging resumed" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+// MONITORING & RECOVERY
+// ═══════════════════════════════════════════════════════════
+
+export const getBulkMessagingProgress = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+
+    const bulkMessaging = await BulkMessagingModel.findById(req.params.id)
+      .select("stats status startedAt completedAt")
+      .lean();
+
+    if (!bulkMessaging) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Bulk messaging not found");
+    }
+
+    const total = bulkMessaging.stats.totalRecipients || 1;
+    const processed = bulkMessaging.stats.sent + bulkMessaging.stats.delivered + bulkMessaging.stats.read + bulkMessaging.stats.failed;
+    const percentage = Math.round((processed / total) * 100);
+
+    res.status(200).json({
+      ...bulkMessaging.stats,
+      status: bulkMessaging.status,
+      percentage,
+      startedAt: bulkMessaging.startedAt,
+      completedAt: bulkMessaging.completedAt,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const retryFailedMessages = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+
+    const result = await MessageQueueModel.updateMany(
+      {
+        bulkMessagingId: new mongoose.Types.ObjectId(req.params.id),
+        status: "failed",
+        errorCategory: { $in: ["transient", "rate_limit"] },
+        retryCount: { $lt: 3 },
+      },
+      {
+        $set: {
+          status: "pending",
+          error: null,
+          errorCode: null,
+          errorCategory: null,
+          failedAt: null,
+          nextRetryAt: null,
+          lockedAt: null,
+          lockedBy: null,
+        },
+      }
+    );
+
+    if (result.modifiedCount > 0) {
+      const bulkMessaging = await BulkMessagingModel.findById(req.params.id);
+      if (bulkMessaging && (bulkMessaging.status === "completed" || bulkMessaging.status === "failed")) {
+        await BulkMessagingModel.findByIdAndUpdate(req.params.id, {
+          $set: { status: "processing" },
+          $inc: {
+            "stats.queued": result.modifiedCount,
+            "stats.failed": -result.modifiedCount,
+          },
+        });
+      }
+    }
+
+    logger.info("[Bulk Messaging] Retried failed messages", {
+      bulkMessagingId: req.params.id,
+      retriedCount: result.modifiedCount,
+    });
+
+    res.status(200).json({
+      message: `${result.modifiedCount} messages queued for retry`,
+      retriedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getFailedMessages = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    ensureValidObjectId(req.params.id);
+    const params = getFailedMessagesSchema.parse(req.body ?? {});
+
+    const filter: any = {
+      bulkMessagingId: new mongoose.Types.ObjectId(req.params.id),
+      status: "failed",
+    };
+    if (params.errorCategory) filter.errorCategory = params.errorCategory;
+    if (params.match) filter.phoneNumber = { $regex: params.match, $options: "i" };
+
+    const [messages, total] = await Promise.all([
+      MessageQueueModel.find(filter)
+        .populate("userId", "name mobile email")
+        .sort({ failedAt: -1 })
+        .skip(params.skip)
+        .limit(params.per_page)
+        .lean(),
+      MessageQueueModel.countDocuments(filter),
+    ]);
+
+    res.status(200).json({
+      count: total,
+      data: messages,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid filter parameters"));
+      return;
+    }
+    next(error);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+// AUDIENCE PREVIEW & TEST SEND
+// ═══════════════════════════════════════════════════════════
+
+export const previewAudience = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const payload = previewAudienceSchema.parse(req.body ?? {});
+    const { audienceFilter } = payload;
+
+    // TODO: CHANGE THIS - Implement actual audience preview
+    // This is a placeholder implementation
+    logger.warn("[Bulk Messaging] Using placeholder previewAudience - implement for your user schema");
+
+    // Placeholder response
+    res.status(200).json({
+      total: 0,
+      sample: [],
+      message: "Audience preview not yet implemented - update previewAudience handler",
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid audience filter"));
+      return;
+    }
+    next(error);
+  }
+};
+
+export const testSendBulkMessaging = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const payload = testSendSchema.parse(req.body ?? {});
+
+    const template = await WhatsAppTemplateModel.findById(payload.templateId);
+    if (!template) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND, "Template not found");
+    }
+
+    // Build components from variables
+    const sampleComponents = (template.variables || [])
+      .sort((a, b) => a.position - b.position)
+      .map((v) => {
+        const override = payload.variableOverrides?.find((o) => o.position === v.position);
+        return {
+          type: "text",
+          text: override?.customValue || v.sampleValue || v.customValue || "Test",
+        };
+      });
+
+    const components = sampleComponents.length > 0 ? [{ type: "body", parameters: sampleComponents }] : [];
+
+    // Send test messages directly via Meta API
+    if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
+      throw new AppError(500, ERROR_CODES.INTERNAL_SERVER_ERROR, "WhatsApp API not configured");
+    }
+
+    const url = `${env.WHATSAPP_GRAPH_BASE_URL}/${env.WHATSAPP_API_VERSION}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    const results: any[] = [];
+
+    for (const phone of payload.testPhoneNumbers) {
+      const cleaned = normalizePhone(phone);
+
+      try {
+        const body = {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: cleaned,
+          type: "template",
+          template: {
+            name: template.metaTemplateName,
+            language: { code: template.language || "en_US" },
+            ...(components.length > 0 && { components }),
+          },
+        };
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.messages?.[0]?.id) {
+          results.push({
+            phone: cleaned,
+            status: "sent",
+            messageId: data.messages[0].id,
+            sentAt: new Date().toISOString(),
+          });
+        } else {
+          const metaError = data.error || {};
+          results.push({
+            phone: cleaned,
+            status: "failed",
+            error: metaError.message || JSON.stringify(data),
+            errorCode: metaError.code || null,
+          });
+        }
+      } catch (err: any) {
+        results.push({ phone: cleaned, status: "failed", error: err.message });
+      }
+    }
+
+    const sentCount = results.filter((r) => r.status === "sent").length;
+    const failedCount = results.filter((r) => r.status === "failed").length;
+
+    logger.info("[Bulk Messaging] Test send completed", {
+      templateId: template._id,
+      sentCount,
+      failedCount,
+    });
+
+    res.status(200).json({
+      message: `${sentCount} sent, ${failedCount} failed`,
+      results,
+      templateName: template.metaTemplateName,
+      sentAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid test send data"));
+      return;
+    }
+    next(error);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+// ANALYTICS
+// ═══════════════════════════════════════════════════════════
+
+export const getCampaignAnalytics = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const params = analyticsQuerySchema.parse(req.query ?? {});
+
+    // Get bulk messaging IDs for campaign filter
+    const bmFilter: any = {};
+    if (params.campaignId) {
+      bmFilter.campaignId = new mongoose.Types.ObjectId(params.campaignId);
+    }
+
+    const bulkMessagings = await BulkMessagingModel.find(bmFilter).select("_id").lean();
+    const bmIds = bulkMessagings.map((bm) => bm._id);
+
+    if (bmIds.length === 0) {
+      res.status(200).json({
+        summary: {},
+        daily: [],
+        templateStats: [],
+        deliveryFunnel: {},
+      });
+      return;
+    }
+
+    // Build message queue filter
+    const mqFilter: any = { bulkMessagingId: { $in: bmIds } };
+    if (params.startDate) {
+      mqFilter.createdAt = { ...mqFilter.createdAt, $gte: params.startDate };
+    }
+    if (params.endDate) {
+      mqFilter.createdAt = { ...mqFilter.createdAt, $lte: params.endDate };
+    }
+
+    // Summary stats
+    const summary = await MessageQueueModel.aggregate([
+      { $match: mqFilter },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          sent: { $sum: { $cond: [{ $in: ["$status", ["sent", "delivered", "read"]] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $in: ["$status", ["delivered", "read"]] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $eq: ["$status", "read"] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] } },
+          totalCost: { $sum: "$cost" },
+        },
+      },
+    ]);
+
+    // Daily breakdown
+    const daily = await MessageQueueModel.aggregate([
+      { $match: mqFilter },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          total: { $sum: 1 },
+          sent: { $sum: { $cond: [{ $in: ["$status", ["sent", "delivered", "read"]] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $in: ["$status", ["delivered", "read"]] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $eq: ["$status", "read"] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] } },
+          cost: { $sum: "$cost" },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Template-wise stats
+    const templateStats = await MessageQueueModel.aggregate([
+      { $match: mqFilter },
+      {
+        $group: {
+          _id: "$templateName",
+          total: { $sum: 1 },
+          sent: { $sum: { $cond: [{ $in: ["$status", ["sent", "delivered", "read"]] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $in: ["$status", ["delivered", "read"]] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $eq: ["$status", "read"] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] } },
+          cost: { $sum: "$cost" },
+        },
+      },
+      { $sort: { total: -1 } },
+    ]);
+
+    // Delivery funnel
+    const s = summary[0] || { total: 0, sent: 0, delivered: 0, read: 0, failed: 0, totalCost: 0 };
+    const deliveryFunnel = {
+      total: s.total,
+      sent: s.sent,
+      sentRate: s.total > 0 ? ((s.sent / s.total) * 100).toFixed(1) : "0",
+      delivered: s.delivered,
+      deliveredRate: s.sent > 0 ? ((s.delivered / s.sent) * 100).toFixed(1) : "0",
+      read: s.read,
+      readRate: s.delivered > 0 ? ((s.read / s.delivered) * 100).toFixed(1) : "0",
+      failed: s.failed,
+      failedRate: s.total > 0 ? ((s.failed / s.total) * 100).toFixed(1) : "0",
+    };
+
+    res.status(200).json({
+      summary: s,
+      daily,
+      templateStats,
+      deliveryFunnel,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid analytics parameters"));
+      return;
+    }
+    next(error);
+  }
+};
