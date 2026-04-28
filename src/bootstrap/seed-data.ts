@@ -16,6 +16,7 @@ import { NotificationModel } from "../modules/system/notification.model";
 import { AuditLogModel } from "../core/audit/audit-log.model";
 import { env } from "../config/env";
 import { logger } from "../core/logging/logger";
+import { seedPortfolioData } from "../modules/portfolio/portfolio.seed";
 
 export async function seedModuleData(): Promise<void> {
   logger.info("Starting module data seeding...");
@@ -1473,6 +1474,9 @@ export async function seedModuleData(): Promise<void> {
     ]);
     logger.info("Seeded audit log entries");
   }
+
+  // Seed Portfolio CMS data
+  await seedPortfolioData();
 
   logger.info("Module data seeding completed successfully!");
 }

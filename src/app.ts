@@ -33,6 +33,10 @@ import { templateRoutes } from "./modules/whatsapp/template.routes";
 import { triggerRoutes } from "./modules/whatsapp/trigger.routes";
 import { inboxRoutes } from "./modules/whatsapp/inbox.routes";
 import { rbacRoutes } from "./modules/rbac/rbac.routes";
+import { portfolioProjectsRoutes } from "./modules/portfolio/portfolio-projects.routes";
+import { portfolioTeamRoutes } from "./modules/portfolio/portfolio-team.routes";
+import { portfolioSettingsRoutes } from "./modules/portfolio/portfolio-settings.routes";
+import { portfolioContactsRoutes } from "./modules/portfolio/portfolio-contacts.routes";
 
 export async function createApp() {
   const app = express();
@@ -89,6 +93,10 @@ export async function createApp() {
   app.use(triggerRoutes);
   app.use(inboxRoutes);
   app.use(rbacRoutes);
+  app.use(portfolioProjectsRoutes);
+  app.use(portfolioTeamRoutes);
+  app.use(portfolioSettingsRoutes);
+  app.use(portfolioContactsRoutes);
 
   registerModuleRoutes(app, moduleManifests);
 
