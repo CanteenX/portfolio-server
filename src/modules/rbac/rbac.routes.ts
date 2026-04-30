@@ -79,9 +79,9 @@ async function validateStrictSubset(
 
 const menuMasterSchema = z.object({
   menuName: z.string().min(1).max(100),
-  isRoot: z.boolean(),
+  isParentMenu: z.boolean().default(false),
   parentMenu: z.string().nullable().optional(),
-  menuUrl: z.string().min(1).max(255),
+  menuUrl: z.string().max(255).default(""),
   sequence: z.number().int().min(0).default(0),
   icon: z.string().max(100).default(""),
   isActive: z.boolean().default(true),
@@ -108,12 +108,17 @@ router.get("/api/v1/rbac/menus", ...AUTH, async (req, res, next) => {
 router.post("/api/v1/rbac/menus", ...SUPER_ONLY, async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = menuMasterSchema.parse(req.body);
-    if (!data.isRoot && !data.parentMenu) {
-      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Sub-menus require a parentMenu.");
+    const parentId = data.parentMenu ? new mongoose.Types.ObjectId(data.parentMenu) : null;
+    if (parentId) {
+      const parent = await MenuMasterModel.findOne({ _id: parentId, clientCode: env.CLIENT_CODE }).lean().exec();
+      if (!parent) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Parent menu not found.");
+      if (!parent.isParentMenu) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Selected parent menu is not marked as a parent (dropdown).");
     }
+    const isRoot = !parentId;
     const menu = await MenuMasterModel.create({
       ...data,
-      parentMenu: data.parentMenu ? new mongoose.Types.ObjectId(data.parentMenu) : null,
+      isRoot,
+      parentMenu: parentId,
       clientCode: env.CLIENT_CODE,
       createdBy: req.user!.id,
       updatedBy: req.user!.id,
@@ -127,9 +132,24 @@ router.post("/api/v1/rbac/menus", ...SUPER_ONLY, async (req: AuthenticatedReques
 router.put("/api/v1/rbac/menus/:id", ...SUPER_ONLY, async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = menuMasterSchema.partial().parse(req.body);
+    const parentId = data.parentMenu !== undefined
+      ? (data.parentMenu ? new mongoose.Types.ObjectId(data.parentMenu) : null)
+      : undefined;
+    if (parentId) {
+      if (parentId.toString() === req.params.id) {
+        throw new AppError(400, ERROR_CODES.BAD_REQUEST, "A menu cannot be its own parent.");
+      }
+      const parent = await MenuMasterModel.findOne({ _id: parentId, clientCode: env.CLIENT_CODE }).lean().exec();
+      if (!parent) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Parent menu not found.");
+      if (!parent.isParentMenu) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Selected parent menu is not marked as a parent (dropdown).");
+    }
+    const isRoot = parentId === null ? true : parentId === undefined ? undefined : false;
+    const update: Record<string, unknown> = { ...data, updatedBy: req.user!.id };
+    if (parentId !== undefined) update.parentMenu = parentId;
+    if (isRoot !== undefined) update.isRoot = isRoot;
     const menu = await MenuMasterModel.findOneAndUpdate(
       { _id: req.params.id, clientCode: env.CLIENT_CODE },
-      { ...data, updatedBy: req.user!.id },
+      update,
       { new: true }
     ).lean().exec();
     if (!menu) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Menu not found.");

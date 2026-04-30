@@ -11,6 +11,9 @@ import { PortfolioMemberModel } from "./portfolio-team.models";
 const router = Router();
 
 const writeRateLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+const readRateLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false });
+
+const slugParamSchema = z.string().min(1).max(200).regex(/^[a-z0-9-]+$/);
 
 function ensureValidObjectId(id: string): void {
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -23,10 +26,11 @@ const educationSchema = z.object({ year: z.string(), degree: z.string(), school:
 const experienceSchema = z.object({ period: z.string(), role: z.string(), company: z.string(), desc: z.string() });
 const projectRefSchema = z.object({ type: z.string(), title: z.string(), tags: z.array(z.string()).default([]) });
 const certificateSchema = z.object({ title: z.string() });
+const urlOrEmpty = z.string().url().optional().or(z.literal(""));
 const socialsSchema = z.object({
-  github: z.string().optional(),
-  linkedin: z.string().optional(),
-  portfolio: z.string().optional()
+  github: urlOrEmpty,
+  linkedin: urlOrEmpty,
+  portfolio: urlOrEmpty
 });
 
 const createMemberSchema = z.object({
@@ -63,23 +67,32 @@ const listQuerySchema = z.object({
 
 // ─── PUBLIC ROUTES (no auth) ─────────────────────────────────────────────────
 
-router.get("/api/v1/public/portfolio/team", async (_req, res, next) => {
+router.get("/api/v1/public/portfolio/team", readRateLimiter, async (_req, res, next) => {
   try {
-    const items = await PortfolioMemberModel.find({ isActive: true }).sort({ order: 1 }).lean().exec();
+    const items = await PortfolioMemberModel.find({ isActive: true }).lean().exec();
+    for (let i = items.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [items[i], items[j]] = [items[j], items[i]];
+    }
     res.json({ items, total: items.length });
   } catch (error) {
     next(error);
   }
 });
 
-router.get("/api/v1/public/portfolio/team/:slug", async (req, res, next) => {
+router.get("/api/v1/public/portfolio/team/:slug", readRateLimiter, async (req, res, next) => {
   try {
-    const member = await PortfolioMemberModel.findOne({ slug: req.params.slug, isActive: true }).lean().exec();
+    const slug = slugParamSchema.parse(req.params.slug);
+    const member = await PortfolioMemberModel.findOne({ slug, isActive: true }).lean().exec();
     if (!member) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND, "Team member not found");
     }
     res.json(member);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid slug"));
+      return;
+    }
     next(error);
   }
 });

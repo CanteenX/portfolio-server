@@ -18,7 +18,11 @@ export type PortfolioProjectDocument = {
   solution: string;
   features: { title: string; description: string }[];
   gallery: { src: string; caption: string }[];
-  roi: string[];
+  roi: { value: string; label: string; description: string; icon: string }[];
+  roiSectionDescription: string;
+  screens: { label: string; caption: string; description: string; image: string }[];
+  workflowSteps: { step: string; title: string; description: string }[];
+  stackSectionDescription: string;
   codeSnippet?: { language: string; label: string; code: string };
   architecture?: string;
   isActive: boolean;
@@ -50,7 +54,34 @@ const portfolioProjectSchema = new Schema<PortfolioProjectDocument>(
       type: [{ src: { type: String }, caption: { type: String } }],
       default: []
     },
-    roi: { type: [String], default: [] },
+    roi: {
+      type: [{
+        value: { type: String, default: "" },
+        label: { type: String, default: "" },
+        description: { type: String, default: "" },
+        icon: { type: String, default: "" }
+      }],
+      default: []
+    },
+    roiSectionDescription: { type: String, default: "" },
+    screens: {
+      type: [{
+        label: { type: String, default: "" },
+        caption: { type: String, default: "" },
+        description: { type: String, default: "" },
+        image: { type: String, default: "" }
+      }],
+      default: []
+    },
+    workflowSteps: {
+      type: [{
+        step: { type: String, default: "" },
+        title: { type: String, default: "" },
+        description: { type: String, default: "" }
+      }],
+      default: []
+    },
+    stackSectionDescription: { type: String, default: "" },
     codeSnippet: {
       type: {
         language: { type: String },

@@ -11,6 +11,13 @@ import { PortfolioProjectModel } from "./portfolio-projects.models";
 const router = Router();
 
 const writeRateLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+const readRateLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false });
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const slugParamSchema = z.string().min(1).max(200).regex(/^[a-z0-9-]+$/);
 
 function ensureValidObjectId(id: string): void {
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -21,6 +28,23 @@ function ensureValidObjectId(id: string): void {
 const featureSchema = z.object({ title: z.string(), description: z.string() });
 const gallerySchema = z.object({ src: z.string(), caption: z.string() });
 const codeSnippetSchema = z.object({ language: z.string(), label: z.string(), code: z.string() });
+const roiItemSchema = z.object({
+  value: z.string().default(""),
+  label: z.string().default(""),
+  description: z.string().default(""),
+  icon: z.string().default("")
+});
+const screenSchema = z.object({
+  label: z.string().default(""),
+  caption: z.string().default(""),
+  description: z.string().default(""),
+  image: z.string().default("")
+});
+const workflowStepSchema = z.object({
+  step: z.string().default(""),
+  title: z.string().default(""),
+  description: z.string().default("")
+});
 
 const createProjectSchema = z.object({
   slug: z.string().min(1).max(200).trim().toLowerCase(),
@@ -34,13 +58,17 @@ const createProjectSchema = z.object({
   role: z.string().max(300).default(""),
   stack: z.array(z.string()).default([]),
   techStack: z.array(z.string()).default([]),
-  liveUrl: z.string().max(2000).optional(),
-  githubUrl: z.string().max(2000).optional(),
+  liveUrl: z.string().url().max(2000).optional().or(z.literal("")),
+  githubUrl: z.string().url().max(2000).optional().or(z.literal("")),
   problem: z.string().default(""),
   solution: z.string().default(""),
   features: z.array(featureSchema).default([]),
   gallery: z.array(gallerySchema).default([]),
-  roi: z.array(z.string()).default([]),
+  roi: z.array(roiItemSchema).default([]),
+  roiSectionDescription: z.string().default(""),
+  screens: z.array(screenSchema).default([]),
+  workflowSteps: z.array(workflowStepSchema).default([]),
+  stackSectionDescription: z.string().default(""),
   codeSnippet: codeSnippetSchema.optional(),
   architecture: z.string().default(""),
   isActive: z.boolean().default(true),
@@ -54,25 +82,69 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20)
 });
 
+const listByParamsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  category: z.string().max(100).optional(),
+  year: z.string().max(20).optional(),
+  client: z.string().max(300).optional(),
+  stack: z.union([z.string(), z.array(z.string())]).optional().transform((v) => {
+    if (!v) return undefined;
+    return Array.isArray(v) ? v : [v];
+  }),
+  search: z.string().max(200).optional()
+});
+
 // ─── PUBLIC ROUTES (no auth) ─────────────────────────────────────────────────
 
-router.get("/api/v1/public/portfolio/projects", async (_req, res, next) => {
+router.get("/api/v1/public/portfolio/projects/listbyparams", readRateLimiter, async (req, res, next) => {
   try {
-    const items = await PortfolioProjectModel.find({ isActive: true }).sort({ order: 1 }).lean().exec();
+    const { page, limit, category, year, client, stack, search } = listByParamsQuerySchema.parse(req.query ?? {});
+    const filter: Record<string, unknown> = { isActive: true };
+    if (category) filter["category"] = category;
+    if (year) filter["year"] = year;
+    if (client) filter["client"] = client;
+    if (stack && stack.length > 0) filter["stack"] = { $in: stack };
+    if (search) {
+      const safeSearch = escapeRegex(search);
+      filter["$or"] = [
+        { title: { $regex: safeSearch, $options: "i" } },
+        { category: { $regex: safeSearch, $options: "i" } }
+      ];
+    }
+    const skip = (page - 1) * limit;
+    const [total, items] = await Promise.all([
+      PortfolioProjectModel.countDocuments(filter).exec(),
+      PortfolioProjectModel.find(filter).sort({ order: 1, createdAt: -1 }).skip(skip).limit(limit).lean().exec()
+    ]);
+    res.json({ items, page, limit, total });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/api/v1/public/portfolio/projects", readRateLimiter, async (_req, res, next) => {
+  try {
+    const items = await PortfolioProjectModel.find({ isActive: true }).sort({ order: 1 }).limit(200).lean().exec();
     res.json({ items, total: items.length });
   } catch (error) {
     next(error);
   }
 });
 
-router.get("/api/v1/public/portfolio/projects/:slug", async (req, res, next) => {
+router.get("/api/v1/public/portfolio/projects/:slug", readRateLimiter, async (req, res, next) => {
   try {
-    const project = await PortfolioProjectModel.findOne({ slug: req.params.slug, isActive: true }).lean().exec();
+    const slug = slugParamSchema.parse(req.params.slug);
+    const project = await PortfolioProjectModel.findOne({ slug, isActive: true }).lean().exec();
     if (!project) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND, "Project not found");
     }
     res.json(project);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid slug"));
+      return;
+    }
     next(error);
   }
 });

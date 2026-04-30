@@ -1,6 +1,7 @@
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
+import path from "node:path";
 import { registerModuleRoutes } from "./bootstrap/module-registry";
 import { env } from "./config/env";
 import { errorHandler } from "./middleware/error-handler";
@@ -37,6 +38,7 @@ import { portfolioProjectsRoutes } from "./modules/portfolio/portfolio-projects.
 import { portfolioTeamRoutes } from "./modules/portfolio/portfolio-team.routes";
 import { portfolioSettingsRoutes } from "./modules/portfolio/portfolio-settings.routes";
 import { portfolioContactsRoutes } from "./modules/portfolio/portfolio-contacts.routes";
+import { portfolioMastersRoutes } from "./modules/portfolio/portfolio-masters.routes";
 
 export async function createApp() {
   const app = express();
@@ -61,6 +63,9 @@ export async function createApp() {
       origin: allowedOrigins.length > 0 ? allowedOrigins : true
     })
   );
+
+  // Serve uploaded portfolio images publicly
+  app.use("/uploads", express.static(path.join(process.cwd(), env.FILE_UPLOAD_DIR)));
 
   // Webhooks need raw body for signature verification.
   app.use(paymentWebhookRoutes);
@@ -97,6 +102,7 @@ export async function createApp() {
   app.use(portfolioTeamRoutes);
   app.use(portfolioSettingsRoutes);
   app.use(portfolioContactsRoutes);
+  app.use(portfolioMastersRoutes);
 
   registerModuleRoutes(app, moduleManifests);
 

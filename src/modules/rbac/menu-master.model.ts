@@ -5,6 +5,7 @@ export type MenuMasterDocument = {
   clientCode: string;
   menuName: string;
   isRoot: boolean;
+  isParentMenu: boolean;
   parentMenu: mongoose.Types.ObjectId | null;
   menuUrl: string;
   sequence: number;
@@ -19,6 +20,7 @@ const menuMasterSchema = new Schema<MenuMasterDocument>(
     clientCode: { type: String, required: true },
     menuName: { type: String, required: true, maxlength: 100 },
     isRoot: { type: Boolean, required: true, default: true },
+    isParentMenu: { type: Boolean, required: true, default: false },
     parentMenu: {
       type: Schema.Types.ObjectId,
       ref: "MenuMaster",
