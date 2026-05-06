@@ -69,7 +69,7 @@ const createProjectSchema = z.object({
   screens: z.array(screenSchema).default([]),
   workflowSteps: z.array(workflowStepSchema).default([]),
   stackSectionDescription: z.string().default(""),
-  codeSnippet: codeSnippetSchema.optional(),
+  codeSnippet: codeSnippetSchema.nullish(),
   architecture: z.string().default(""),
   isActive: z.boolean().default(true),
   order: z.number().int().default(0)

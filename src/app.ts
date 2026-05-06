@@ -57,7 +57,7 @@ export async function createApp() {
 
   app.use(requestId);
   app.use(requestLogger);
-  app.use(helmet());
+  app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
   app.use(
     cors({
       origin: allowedOrigins.length > 0 ? allowedOrigins : true
