@@ -60,7 +60,8 @@ export async function createApp() {
   app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
   app.use(
     cors({
-      origin: allowedOrigins.length > 0 ? allowedOrigins : true
+      origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+      credentials: true
     })
   );
 

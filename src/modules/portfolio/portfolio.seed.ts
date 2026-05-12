@@ -3,12 +3,72 @@ import { PortfolioProjectModel } from "./portfolio-projects.models";
 import { PortfolioMemberModel } from "./portfolio-team.models";
 import { PortfolioSettingsModel } from "./portfolio-settings.models";
 import { PortfolioContactModel } from "./portfolio-contacts.models";
+import { TechStackModel, CategoryModel, YearModel, ClientModel } from "./portfolio-masters.models";
 
 export async function seedPortfolioData(): Promise<void> {
   await seedPortfolioSettings();
+  await seedPortfolioMasters();
   await seedPortfolioProjects();
   await seedPortfolioTeam();
   logger.info("Portfolio seed complete.");
+}
+
+// ── Masters ───────────────────────────────────────────────────────────────────
+
+async function seedPortfolioMasters(): Promise<void> {
+  const [catCount, yearCount, clientCount, stackCount] = await Promise.all([
+    CategoryModel.countDocuments().exec(),
+    YearModel.countDocuments().exec(),
+    ClientModel.countDocuments().exec(),
+    TechStackModel.countDocuments().exec(),
+  ]);
+
+  if (catCount === 0) {
+    await CategoryModel.insertMany([
+      { name: "Backend/Cloud", isActive: true, order: 1 },
+      { name: "Native Mobile", isActive: true, order: 2 },
+      { name: "Web Apps", isActive: true, order: 3 },
+      { name: "Fintech", isActive: true, order: 4 },
+      { name: "AI / ML", isActive: true, order: 5 },
+      { name: "DevOps / Infra", isActive: true, order: 6 },
+    ]);
+    logger.info("Seeded portfolio categories");
+  }
+
+  if (yearCount === 0) {
+    await YearModel.insertMany([
+      { year: "2025", isActive: true, order: 1 },
+      { year: "2024", isActive: true, order: 2 },
+      { year: "2023", isActive: true, order: 3 },
+      { year: "2022", isActive: true, order: 4 },
+    ]);
+    logger.info("Seeded portfolio years");
+  }
+
+  if (clientCount === 0) {
+    await ClientModel.insertMany([
+      { name: "Confidential — EU Fintech", isActive: true, order: 1 },
+      { name: "DTC lifestyle brand", isActive: true, order: 2 },
+      { name: "B2B analytics startup (Series A)", isActive: true, order: 3 },
+      { name: "Pan-Asian logistics operator", isActive: true, order: 4 },
+    ]);
+    logger.info("Seeded portfolio clients");
+  }
+
+  if (stackCount === 0) {
+    const stacks = [
+      "Node.js", "TypeScript", "React", "Next.js", "React Native",
+      "Expo", "Go", "Rust", "Python", "PostgreSQL", "MongoDB",
+      "Redis", "Kafka", "gRPC", "GraphQL", "tRPC",
+      "AWS ECS", "GCP", "Kubernetes", "Terraform", "Docker",
+      "Istio", "ClickHouse", "Datadog", "Prometheus", "OpenTelemetry",
+      "Stripe", "Reanimated 3", "Zustand", "MMKV", "EAS",
+    ];
+    await TechStackModel.insertMany(
+      stacks.map((name, i) => ({ name, isActive: true, order: i + 1, image: "", description: "" }))
+    );
+    logger.info("Seeded portfolio tech stacks");
+  }
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
@@ -176,7 +236,12 @@ async function seedPortfolioProjects(): Promise<void> {
         { src: "https://images.unsplash.com/photo-1518186285589-2f7649de83e0?auto=format&fit=crop&w=1600&q=80", caption: "Reconciliation report" },
         { src: "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1600&q=80", caption: "Latency monitoring (Datadog)" },
       ],
-      roi: ["Settlement time reduced from 8s p95 to 320ms p95", "$2M+ processed daily with zero double-spends in 9 months", "Passed SOC 2 Type II audit on first attempt", "Infra cost cut 38% via right-sized autoscaling"],
+      roi: [
+        { value: "320ms", label: "p95 settlement time", description: "Down from 8s p95 on the legacy ledger", icon: "Zap" },
+        { value: "$2M+", label: "processed daily", description: "Zero double-spends across 9 months of live traffic", icon: "DollarSign" },
+        { value: "SOC 2", label: "Type II passed", description: "First attempt — audit-ready idempotency built in from day one", icon: "Shield" },
+        { value: "38%", label: "infra cost reduction", description: "Via right-sized autoscaling and ECS task right-sizing", icon: "TrendingUp" },
+      ],
       architecture: "Client → API Gateway (idempotency) → Kafka → Ledger writer → Postgres projections → Read API",
       isActive: true,
       order: 1,
@@ -206,7 +271,12 @@ async function seedPortfolioProjects(): Promise<void> {
         { src: "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?auto=format&fit=crop&w=1600&q=80", caption: "Product detail with Reanimated parallax" },
         { src: "https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?auto=format&fit=crop&w=1600&q=80", caption: "Checkout — biometric auth" },
       ],
-      roi: ["100k downloads in the first 6 weeks", "4.8★ on App Store · 4.7★ on Play Store", "60fps maintained across 3-year-old hardware", "OTA updates shipped in <30 minutes"],
+      roi: [
+        { value: "100k", label: "downloads in 6 weeks", description: "Organic growth driven by the 60fps experience", icon: "TrendingUp" },
+        { value: "4.8★", label: "App Store rating", description: "4.7★ on Google Play — users love the feel", icon: "Star" },
+        { value: "60fps", label: "on 3-year-old hardware", description: "Reanimated 3 worklets never drop a frame", icon: "Zap" },
+        { value: "<30 min", label: "OTA hotfix time", description: "EAS Update channel — JS patches without App Store review", icon: "Timer" },
+      ],
       isActive: true,
       order: 2,
     },
@@ -235,7 +305,12 @@ async function seedPortfolioProjects(): Promise<void> {
         { src: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1600&q=80", caption: "Cohort explorer" },
         { src: "https://images.unsplash.com/photo-1543286386-713bdd548da4?auto=format&fit=crop&w=1600&q=80", caption: "Admin console" },
       ],
-      roi: ["Dashboard p95 dropped from 6.2s to 410ms", "Supports 50M+ row datasets per tenant", "12k monthly active users across 340 orgs", "Closed Series B partly on the back of the rebuild"],
+      roi: [
+        { value: "410ms", label: "dashboard p95 load", description: "Down from 6.2s — ClickHouse query layer in action", icon: "Zap" },
+        { value: "50M+", label: "rows per tenant", description: "Sub-second aggregations via ClickHouse columnar engine", icon: "BarChart" },
+        { value: "12k", label: "monthly active users", description: "Across 340 orgs post-launch", icon: "Users" },
+        { value: "Series B", label: "closed", description: "Product rebuild was a key proof point for investors", icon: "TrendingUp" },
+      ],
       isActive: true,
       order: 3,
     },
@@ -263,7 +338,12 @@ async function seedPortfolioProjects(): Promise<void> {
         { src: "https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=1600&q=80", caption: "Fleet operations console" },
         { src: "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1600&q=80", caption: "Service mesh topology" },
       ],
-      roi: ["Handles 8M requests/day with p99 < 80ms", "Survived 11x peak surge with zero cascade failures", "Deploy cadence went from weekly to ~30/day", "MTTR cut from 47 min to 6 min"],
+      roi: [
+        { value: "8M", label: "requests per day", description: "p99 latency under 80ms across all 7 Go services", icon: "Zap" },
+        { value: "11x", label: "peak surge survived", description: "Zero cascade failures during festival season load test", icon: "Shield" },
+        { value: "30/day", label: "deploys cadence", description: "Up from weekly — Argo Rollouts with metric gates", icon: "Rocket" },
+        { value: "6 min", label: "MTTR", description: "Down from 47 min — OTel traces + automated rollback", icon: "Timer" },
+      ],
       isActive: true,
       order: 4,
     },
