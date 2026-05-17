@@ -45,7 +45,7 @@ before(async () => {
   process.env.MONGO_URI = uri;
   await mongoose.connect(uri);
   const { createApp } = await import("../app");
-  app = createApp();
+  app = await createApp();
 });
 
 after(async () => {
