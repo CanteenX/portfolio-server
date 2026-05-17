@@ -623,8 +623,74 @@ function requestLogger(req, res, next) {
 }
 
 // src/middleware/swagger.ts
+var import_bcryptjs = __toESM(require("bcryptjs"), 1);
 var import_node_fs = __toESM(require("node:fs"), 1);
 var import_node_path = __toESM(require("node:path"), 1);
+
+// src/core/auth/user.model.ts
+var import_mongoose2 = __toESM(require("mongoose"), 1);
+var userSchema = new import_mongoose2.Schema(
+  {
+    email: { type: String, required: true, unique: true },
+    passwordHash: { type: String, required: true },
+    role: { type: String, enum: ["super_admin", "admin"], required: true },
+    customRoleId: { type: String, default: void 0 }
+  },
+  { timestamps: true }
+);
+var UserModel = import_mongoose2.default.models.User ?? import_mongoose2.default.model("User", userSchema);
+
+// src/middleware/swagger.ts
+var BASIC_REALM = 'Basic realm="Admin API Docs", charset="UTF-8"';
+function requireBasic(res, message) {
+  res.set("WWW-Authenticate", BASIC_REALM);
+  res.status(401).json({ code: "UNAUTHORIZED", message });
+}
+async function docsAuth(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) {
+    requireBasic(res, "Authentication required");
+    return;
+  }
+  if (header.startsWith("Bearer ")) {
+    authenticateJwt(req, res, () => {
+      const user = req.user;
+      if (!user || user.role !== "super_admin") {
+        res.status(403).json({ code: "FORBIDDEN", message: "API docs restricted to super_admin" });
+        return;
+      }
+      next();
+    });
+    return;
+  }
+  if (header.startsWith("Basic ")) {
+    try {
+      const decoded = Buffer.from(header.slice(6), "base64").toString("utf-8");
+      const sep = decoded.indexOf(":");
+      const email = sep === -1 ? decoded : decoded.slice(0, sep);
+      const password = sep === -1 ? "" : decoded.slice(sep + 1);
+      if (!email || !password) {
+        requireBasic(res, "Invalid credentials");
+        return;
+      }
+      const user = await UserModel.findOne({ email }).exec();
+      if (!user) {
+        requireBasic(res, "Invalid credentials");
+        return;
+      }
+      const valid = await import_bcryptjs.default.compare(password, user.passwordHash);
+      if (!valid || user.role !== "super_admin") {
+        requireBasic(res, "Invalid credentials");
+        return;
+      }
+      next();
+    } catch {
+      requireBasic(res, "Invalid credentials");
+    }
+    return;
+  }
+  requireBasic(res, "Use Basic auth or Bearer token");
+}
 async function mountSwagger(app) {
   const enabled = env.NODE_ENV !== "production" || env.ENABLE_API_DOCS === "true";
   if (!enabled) {
@@ -650,21 +716,13 @@ async function mountSwagger(app) {
     const spec = YAML.parse(specContent);
     const handlers = [];
     if (env.NODE_ENV === "production") {
-      handlers.push(authenticateJwt);
-      handlers.push((req, res, next) => {
-        const user = req.user;
-        if (!user || user.role !== "super_admin") {
-          res.status(403).json({ code: "FORBIDDEN", message: "API docs restricted to super_admin" });
-          return;
-        }
-        next();
-      });
+      handlers.push(docsAuth);
     }
     app.use("/api/docs", ...handlers, swaggerUi.serve, swaggerUi.setup(spec, {
       customSiteTitle: "Admin Platform API Docs",
       customCss: ".swagger-ui .topbar { display: none }"
     }));
-    const mode = env.NODE_ENV === "production" ? "super_admin-only" : "open";
+    const mode = env.NODE_ENV === "production" ? "super_admin-only (Basic or Bearer)" : "open";
     logger.info(`Swagger UI mounted at /api/docs (${mode}, spec: ${specPath})`);
   } catch (err) {
     logger.error("Failed to mount Swagger UI", err);
@@ -674,7 +732,7 @@ async function mountSwagger(app) {
 // src/modules/api-management/api-management.routes.ts
 var import_crypto = require("crypto");
 var import_express = require("express");
-var import_mongoose3 = __toESM(require("mongoose"), 1);
+var import_mongoose4 = __toESM(require("mongoose"), 1);
 var import_express_rate_limit = __toESM(require("express-rate-limit"), 1);
 var import_zod2 = require("zod");
 
@@ -689,8 +747,8 @@ function moduleGuards(moduleKey, permission) {
 }
 
 // src/modules/api-management/api-management.models.ts
-var import_mongoose2 = __toESM(require("mongoose"), 1);
-var apiAccessKeySchema = new import_mongoose2.Schema(
+var import_mongoose3 = __toESM(require("mongoose"), 1);
+var apiAccessKeySchema = new import_mongoose3.Schema(
   {
     name: { type: String, required: true, trim: true },
     description: { type: String, default: "" },
@@ -704,23 +762,23 @@ var apiAccessKeySchema = new import_mongoose2.Schema(
     revokedByUserId: { type: String },
     lastUsedAt: { type: Date },
     expiresAt: { type: Date, index: true },
-    rotatedFromKeyId: { type: import_mongoose2.Schema.Types.ObjectId, ref: "ApiAccessKey", index: true }
+    rotatedFromKeyId: { type: import_mongoose3.Schema.Types.ObjectId, ref: "ApiAccessKey", index: true }
   },
   { timestamps: true }
 );
 apiAccessKeySchema.index({ status: 1, createdAt: -1 });
-var ApiAccessKeyModel = import_mongoose2.default.models.ApiAccessKey ?? import_mongoose2.default.model("ApiAccessKey", apiAccessKeySchema);
-var apiAccessKeyAuditEventSchema = new import_mongoose2.Schema(
+var ApiAccessKeyModel = import_mongoose3.default.models.ApiAccessKey ?? import_mongoose3.default.model("ApiAccessKey", apiAccessKeySchema);
+var apiAccessKeyAuditEventSchema = new import_mongoose3.Schema(
   {
-    keyId: { type: import_mongoose2.Schema.Types.ObjectId, ref: "ApiAccessKey", required: true, index: true },
+    keyId: { type: import_mongoose3.Schema.Types.ObjectId, ref: "ApiAccessKey", required: true, index: true },
     action: { type: String, enum: ["issued", "revoked", "regenerated"], required: true },
     actorUserId: { type: String, required: true },
-    metadata: { type: import_mongoose2.Schema.Types.Mixed, default: {} }
+    metadata: { type: import_mongoose3.Schema.Types.Mixed, default: {} }
   },
   { timestamps: true }
 );
 apiAccessKeyAuditEventSchema.index({ keyId: 1, createdAt: -1 });
-var ApiAccessKeyAuditEventModel = import_mongoose2.default.models.ApiAccessKeyAuditEvent ?? import_mongoose2.default.model("ApiAccessKeyAuditEvent", apiAccessKeyAuditEventSchema);
+var ApiAccessKeyAuditEventModel = import_mongoose3.default.models.ApiAccessKeyAuditEvent ?? import_mongoose3.default.model("ApiAccessKeyAuditEvent", apiAccessKeyAuditEventSchema);
 
 // src/modules/api-management/api-management.routes.ts
 var router = (0, import_express.Router)();
@@ -746,7 +804,7 @@ var regenerateKeySchema = import_zod2.z.object({
   expiresAt: import_zod2.z.string().datetime().optional()
 });
 function ensureValidObjectId(id) {
-  if (!import_mongoose3.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose4.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -885,7 +943,7 @@ router.post(
   apiManagementWriteRateLimiter,
   ...moduleGuards("api-management", "api-management.create"),
   async (req, res, next) => {
-    const session = await import_mongoose3.default.startSession();
+    const session = await import_mongoose4.default.startSession();
     try {
       ensureValidObjectId(req.params.id);
       const payload = regenerateKeySchema.parse(req.body ?? {});
@@ -1015,12 +1073,12 @@ var apiManagementRoutes = router;
 // src/modules/calendar/calendar.routes.ts
 var import_express_rate_limit2 = __toESM(require("express-rate-limit"), 1);
 var import_express2 = require("express");
-var import_mongoose5 = __toESM(require("mongoose"), 1);
+var import_mongoose6 = __toESM(require("mongoose"), 1);
 var import_zod3 = require("zod");
 
 // src/modules/calendar/calendar.models.ts
-var import_mongoose4 = __toESM(require("mongoose"), 1);
-var calendarEventSchema = new import_mongoose4.Schema(
+var import_mongoose5 = __toESM(require("mongoose"), 1);
+var calendarEventSchema = new import_mongoose5.Schema(
   {
     title: { type: String, required: true, maxlength: 300, trim: true },
     description: { type: String, maxlength: 4e3 },
@@ -1048,7 +1106,7 @@ var calendarEventSchema = new import_mongoose4.Schema(
 );
 calendarEventSchema.index({ startDate: 1, endDate: 1 });
 calendarEventSchema.index({ createdByUserId: 1, status: 1 });
-var CalendarEventModel = import_mongoose4.default.models.CalendarEvent ?? import_mongoose4.default.model("CalendarEvent", calendarEventSchema);
+var CalendarEventModel = import_mongoose5.default.models.CalendarEvent ?? import_mongoose5.default.model("CalendarEvent", calendarEventSchema);
 
 // src/modules/calendar/calendar.routes.ts
 var router2 = (0, import_express2.Router)();
@@ -1090,7 +1148,7 @@ var calendarWriteRateLimiter = (0, import_express_rate_limit2.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId2(id) {
-  if (!import_mongoose5.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose6.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -1303,12 +1361,12 @@ var calendarRoutes = router2;
 // src/modules/chat/chat.routes.ts
 var import_express_rate_limit3 = __toESM(require("express-rate-limit"), 1);
 var import_express3 = require("express");
-var import_mongoose7 = __toESM(require("mongoose"), 1);
+var import_mongoose8 = __toESM(require("mongoose"), 1);
 var import_zod4 = require("zod");
 
 // src/modules/chat/chat.models.ts
-var import_mongoose6 = __toESM(require("mongoose"), 1);
-var chatConversationSchema = new import_mongoose6.Schema(
+var import_mongoose7 = __toESM(require("mongoose"), 1);
+var chatConversationSchema = new import_mongoose7.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 200 },
     participantUserIds: {
@@ -1327,10 +1385,10 @@ var chatConversationSchema = new import_mongoose6.Schema(
   { timestamps: true }
 );
 chatConversationSchema.index({ status: 1, lastMessageAt: -1 });
-var ChatConversationModel = import_mongoose6.default.models.ChatConversation ?? import_mongoose6.default.model("ChatConversation", chatConversationSchema);
-var chatMessageSchema = new import_mongoose6.Schema(
+var ChatConversationModel = import_mongoose7.default.models.ChatConversation ?? import_mongoose7.default.model("ChatConversation", chatConversationSchema);
+var chatMessageSchema = new import_mongoose7.Schema(
   {
-    conversationId: { type: import_mongoose6.Schema.Types.ObjectId, ref: "ChatConversation", required: true, index: true },
+    conversationId: { type: import_mongoose7.Schema.Types.ObjectId, ref: "ChatConversation", required: true, index: true },
     senderUserId: { type: String, required: true },
     senderEmail: { type: String, required: true },
     content: { type: String, required: true, maxlength: 4e3 },
@@ -1339,7 +1397,7 @@ var chatMessageSchema = new import_mongoose6.Schema(
   { timestamps: true }
 );
 chatMessageSchema.index({ conversationId: 1, createdAt: -1 });
-var ChatMessageModel = import_mongoose6.default.models.ChatMessage ?? import_mongoose6.default.model("ChatMessage", chatMessageSchema);
+var ChatMessageModel = import_mongoose7.default.models.ChatMessage ?? import_mongoose7.default.model("ChatMessage", chatMessageSchema);
 
 // src/modules/chat/chat-events.ts
 var clients = [];
@@ -1392,7 +1450,7 @@ var chatWriteRateLimiter = (0, import_express_rate_limit3.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId3(id) {
-  if (!import_mongoose7.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose8.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -1592,7 +1650,7 @@ router3.post(
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Archived conversations cannot receive new messages");
       }
       const message = await ChatMessageModel.create({
-        conversationId: new import_mongoose7.default.Types.ObjectId(req.params.id),
+        conversationId: new import_mongoose8.default.Types.ObjectId(req.params.id),
         senderUserId: req.user.id,
         senderEmail: req.user.email,
         content: payload.content.trim()
@@ -1736,13 +1794,13 @@ var chatRoutes = router3;
 
 // src/modules/crm/crm.routes.ts
 var import_express4 = require("express");
-var import_mongoose9 = __toESM(require("mongoose"), 1);
+var import_mongoose10 = __toESM(require("mongoose"), 1);
 var import_express_rate_limit4 = __toESM(require("express-rate-limit"), 1);
 var import_zod5 = require("zod");
 
 // src/modules/crm/crm.models.ts
-var import_mongoose8 = __toESM(require("mongoose"), 1);
-var crmContactSchema = new import_mongoose8.Schema(
+var import_mongoose9 = __toESM(require("mongoose"), 1);
+var crmContactSchema = new import_mongoose9.Schema(
   {
     displayName: { type: String, required: true, trim: true },
     primaryEmail: { type: String, lowercase: true },
@@ -1755,8 +1813,8 @@ var crmContactSchema = new import_mongoose8.Schema(
   { timestamps: true }
 );
 crmContactSchema.index({ primaryEmail: 1 });
-var CrmContactModel = import_mongoose8.default.models.CrmContact ?? import_mongoose8.default.model("CrmContact", crmContactSchema);
-var pipelineStageSchema = new import_mongoose8.Schema(
+var CrmContactModel = import_mongoose9.default.models.CrmContact ?? import_mongoose9.default.model("CrmContact", crmContactSchema);
+var pipelineStageSchema = new import_mongoose9.Schema(
   {
     key: { type: String, required: true },
     label: { type: String, required: true },
@@ -1766,7 +1824,7 @@ var pipelineStageSchema = new import_mongoose8.Schema(
   },
   { _id: false }
 );
-var crmPipelineSchema = new import_mongoose8.Schema(
+var crmPipelineSchema = new import_mongoose9.Schema(
   {
     name: { type: String, required: true },
     isDefault: { type: Boolean, default: false },
@@ -1774,12 +1832,12 @@ var crmPipelineSchema = new import_mongoose8.Schema(
   },
   { timestamps: true }
 );
-var CrmPipelineModel = import_mongoose8.default.models.CrmPipeline ?? import_mongoose8.default.model("CrmPipeline", crmPipelineSchema);
-var crmDealSchema = new import_mongoose8.Schema(
+var CrmPipelineModel = import_mongoose9.default.models.CrmPipeline ?? import_mongoose9.default.model("CrmPipeline", crmPipelineSchema);
+var crmDealSchema = new import_mongoose9.Schema(
   {
     title: { type: String, required: true },
-    contactId: { type: import_mongoose8.Schema.Types.ObjectId, ref: "CrmContact", required: true, index: true },
-    pipelineId: { type: import_mongoose8.Schema.Types.ObjectId, ref: "CrmPipeline", required: true, index: true },
+    contactId: { type: import_mongoose9.Schema.Types.ObjectId, ref: "CrmContact", required: true, index: true },
+    pipelineId: { type: import_mongoose9.Schema.Types.ObjectId, ref: "CrmPipeline", required: true, index: true },
     stageKey: { type: String, required: true },
     amountValue: { type: Number, required: true, min: 0, default: 0 },
     currency: { type: String, required: true, default: "USD" },
@@ -1791,7 +1849,7 @@ var crmDealSchema = new import_mongoose8.Schema(
   { timestamps: true }
 );
 crmDealSchema.index({ pipelineId: 1, stageKey: 1 });
-var CrmDealModel = import_mongoose8.default.models.CrmDeal ?? import_mongoose8.default.model("CrmDeal", crmDealSchema);
+var CrmDealModel = import_mongoose9.default.models.CrmDeal ?? import_mongoose9.default.model("CrmDeal", crmDealSchema);
 
 // src/modules/crm/crm.routes.ts
 var router4 = (0, import_express4.Router)();
@@ -1839,7 +1897,7 @@ var stageTransitionSchema = import_zod5.z.object({
   lostReason: import_zod5.z.string().optional()
 });
 function ensureValidObjectId4(id) {
-  if (!import_mongoose9.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose10.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -1978,8 +2036,8 @@ router4.post("/api/v1/crm/deals", crmWriteRateLimiter, ...moduleGuards("crm", "c
     }
     const created = await CrmDealModel.create({
       ...payload,
-      contactId: new import_mongoose9.default.Types.ObjectId(payload.contactId),
-      pipelineId: new import_mongoose9.default.Types.ObjectId(payload.pipelineId),
+      contactId: new import_mongoose10.default.Types.ObjectId(payload.contactId),
+      pipelineId: new import_mongoose10.default.Types.ObjectId(payload.pipelineId),
       expectedCloseDate: payload.expectedCloseDate ? new Date(payload.expectedCloseDate) : void 0,
       status: deriveDealStatus(stage)
     });
@@ -2088,22 +2146,22 @@ var PAYMENT_PROVIDER_KEYS = ["stripe", "paypal", "razorpay"];
 
 // src/modules/ecommerce/ecommerce.payment.service.ts
 var import_crypto3 = __toESM(require("crypto"), 1);
-var import_mongoose12 = __toESM(require("mongoose"), 1);
+var import_mongoose13 = __toESM(require("mongoose"), 1);
 
 // src/core/payments/payment.models.ts
-var import_mongoose10 = __toESM(require("mongoose"), 1);
-var paymentIdempotencySchema = new import_mongoose10.Schema(
+var import_mongoose11 = __toESM(require("mongoose"), 1);
+var paymentIdempotencySchema = new import_mongoose11.Schema(
   {
     key: { type: String, required: true, unique: true, index: true },
     provider: { type: String, enum: ["stripe", "paypal", "razorpay"], required: true },
-    orderId: { type: import_mongoose10.Schema.Types.ObjectId, required: true, ref: "EcommerceOrder" },
+    orderId: { type: import_mongoose11.Schema.Types.ObjectId, required: true, ref: "EcommerceOrder" },
     requestHash: { type: String, required: true },
-    responsePayload: { type: import_mongoose10.Schema.Types.Mixed, required: true }
+    responsePayload: { type: import_mongoose11.Schema.Types.Mixed, required: true }
   },
   { timestamps: true }
 );
-var PaymentIdempotencyModel = import_mongoose10.default.models.PaymentIdempotency ?? import_mongoose10.default.model("PaymentIdempotency", paymentIdempotencySchema);
-var paymentWebhookEventSchema = new import_mongoose10.Schema(
+var PaymentIdempotencyModel = import_mongoose11.default.models.PaymentIdempotency ?? import_mongoose11.default.model("PaymentIdempotency", paymentIdempotencySchema);
+var paymentWebhookEventSchema = new import_mongoose11.Schema(
   {
     provider: { type: String, enum: ["stripe", "paypal", "razorpay"], required: true },
     eventId: { type: String, required: true },
@@ -2113,7 +2171,7 @@ var paymentWebhookEventSchema = new import_mongoose10.Schema(
   { timestamps: true }
 );
 paymentWebhookEventSchema.index({ provider: 1, eventId: 1 }, { unique: true });
-var PaymentWebhookEventModel = import_mongoose10.default.models.PaymentWebhookEvent ?? import_mongoose10.default.model("PaymentWebhookEvent", paymentWebhookEventSchema);
+var PaymentWebhookEventModel = import_mongoose11.default.models.PaymentWebhookEvent ?? import_mongoose11.default.model("PaymentWebhookEvent", paymentWebhookEventSchema);
 
 // src/core/payments/payment.providers.ts
 var crc32 = __toESM(require("buffer-crc32"), 1);
@@ -2792,8 +2850,8 @@ function hashRawPayload(rawBody) {
 }
 
 // src/modules/ecommerce/ecommerce.models.ts
-var import_mongoose11 = __toESM(require("mongoose"), 1);
-var ecommerceProductSchema = new import_mongoose11.Schema(
+var import_mongoose12 = __toESM(require("mongoose"), 1);
+var ecommerceProductSchema = new import_mongoose12.Schema(
   {
     title: { type: String, required: true, trim: true },
     sku: { type: String, required: true, unique: true, trim: true },
@@ -2805,10 +2863,10 @@ var ecommerceProductSchema = new import_mongoose11.Schema(
   },
   { timestamps: true }
 );
-var EcommerceProductModel = import_mongoose11.default.models.EcommerceProduct ?? import_mongoose11.default.model("EcommerceProduct", ecommerceProductSchema);
-var ecommerceOrderLineSchema = new import_mongoose11.Schema(
+var EcommerceProductModel = import_mongoose12.default.models.EcommerceProduct ?? import_mongoose12.default.model("EcommerceProduct", ecommerceProductSchema);
+var ecommerceOrderLineSchema = new import_mongoose12.Schema(
   {
-    productId: { type: import_mongoose11.Schema.Types.ObjectId, ref: "EcommerceProduct", required: true },
+    productId: { type: import_mongoose12.Schema.Types.ObjectId, ref: "EcommerceProduct", required: true },
     title: { type: String, required: true },
     sku: { type: String, required: true },
     qty: { type: Number, required: true, min: 1 },
@@ -2817,7 +2875,7 @@ var ecommerceOrderLineSchema = new import_mongoose11.Schema(
   },
   { _id: false }
 );
-var ecommerceOrderSchema = new import_mongoose11.Schema(
+var ecommerceOrderSchema = new import_mongoose12.Schema(
   {
     orderNumber: { type: String, required: true, unique: true },
     customerName: { type: String, required: true },
@@ -2858,11 +2916,11 @@ var ecommerceOrderSchema = new import_mongoose11.Schema(
 ecommerceOrderSchema.index({ status: 1, createdAt: -1 });
 ecommerceOrderSchema.index({ "payment.providerOrderId": 1 });
 ecommerceOrderSchema.index({ "payment.providerPaymentId": 1 });
-var EcommerceOrderModel = import_mongoose11.default.models.EcommerceOrder ?? import_mongoose11.default.model("EcommerceOrder", ecommerceOrderSchema);
+var EcommerceOrderModel = import_mongoose12.default.models.EcommerceOrder ?? import_mongoose12.default.model("EcommerceOrder", ecommerceOrderSchema);
 
 // src/modules/ecommerce/ecommerce.payment.service.ts
 function ensureValidObjectId5(id) {
-  if (!import_mongoose12.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose13.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -2982,7 +3040,7 @@ async function processPaymentWebhook(provider, rawBody, headers) {
       eventId: normalizedEvent.eventId
     };
   }
-  let order = normalizedEvent.orderId && import_mongoose12.default.Types.ObjectId.isValid(normalizedEvent.orderId) ? await EcommerceOrderModel.findById(normalizedEvent.orderId).exec() : null;
+  let order = normalizedEvent.orderId && import_mongoose13.default.Types.ObjectId.isValid(normalizedEvent.orderId) ? await EcommerceOrderModel.findById(normalizedEvent.orderId).exec() : null;
   if (!order && normalizedEvent.providerOrderId) {
     order = await EcommerceOrderModel.findOne({ "payment.providerOrderId": normalizedEvent.providerOrderId }).exec();
   }
@@ -3169,7 +3227,7 @@ paymentWebhookRoutes.post(
 
 // src/modules/ecommerce/ecommerce.routes.ts
 var import_express6 = require("express");
-var import_mongoose13 = __toESM(require("mongoose"), 1);
+var import_mongoose14 = __toESM(require("mongoose"), 1);
 var import_express_rate_limit6 = __toESM(require("express-rate-limit"), 1);
 var import_zod7 = require("zod");
 var router5 = (0, import_express6.Router)();
@@ -3205,7 +3263,7 @@ var transitionPayloadSchema = import_zod7.z.object({
   to: import_zod7.z.enum(["open", "paid", "shipped", "completed", "cancelled", "refunded"])
 });
 function ensureValidObjectId6(id) {
-  if (!import_mongoose13.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose14.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -3295,7 +3353,7 @@ router5.get("/api/v1/ecommerce/orders", ...moduleGuards("ecommerce", "ecommerce.
   }
 });
 router5.post("/api/v1/ecommerce/orders", ecommerceWriteRateLimiter, ...moduleGuards("ecommerce", "ecommerce.create"), async (req, res, next) => {
-  const session = await import_mongoose13.default.startSession();
+  const session = await import_mongoose14.default.startSession();
   try {
     const payload = orderPayloadSchema.parse(req.body ?? {});
     let createdOrder = null;
@@ -3370,7 +3428,7 @@ router5.post(
   ecommerceWriteRateLimiter,
   ...moduleGuards("ecommerce", "ecommerce.update"),
   async (req, res, next) => {
-    const session = await import_mongoose13.default.startSession();
+    const session = await import_mongoose14.default.startSession();
     try {
       ensureValidObjectId6(req.params.id);
       const { to } = transitionPayloadSchema.parse(req.body ?? {});
@@ -3440,17 +3498,17 @@ var import_node_path3 = __toESM(require("node:path"), 1);
 var import_node_util = require("node:util");
 var import_express_rate_limit7 = __toESM(require("express-rate-limit"), 1);
 var import_express7 = require("express");
-var import_mongoose15 = __toESM(require("mongoose"), 1);
+var import_mongoose16 = __toESM(require("mongoose"), 1);
 var import_multer = __toESM(require("multer"), 1);
 var import_zod8 = require("zod");
 
 // src/modules/file-manager/file-manager.models.ts
-var import_mongoose14 = __toESM(require("mongoose"), 1);
-var fileManagerEntrySchema = new import_mongoose14.Schema(
+var import_mongoose15 = __toESM(require("mongoose"), 1);
+var fileManagerEntrySchema = new import_mongoose15.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 200 },
     kind: { type: String, enum: ["folder", "file"], required: true, index: true },
-    parentId: { type: import_mongoose14.Schema.Types.ObjectId, ref: "FileManagerEntry", default: null, index: true },
+    parentId: { type: import_mongoose15.Schema.Types.ObjectId, ref: "FileManagerEntry", default: null, index: true },
     sizeBytes: { type: Number, min: 0 },
     mimeType: { type: String, trim: true, maxlength: 180 },
     extension: { type: String, trim: true, maxlength: 24 },
@@ -3473,7 +3531,7 @@ fileManagerEntrySchema.index(
   }
 );
 fileManagerEntrySchema.index({ parentId: 1, status: 1, kind: 1, createdAt: -1 });
-var FileManagerEntryModel = import_mongoose14.default.models.FileManagerEntry ?? import_mongoose14.default.model("FileManagerEntry", fileManagerEntrySchema);
+var FileManagerEntryModel = import_mongoose15.default.models.FileManagerEntry ?? import_mongoose15.default.model("FileManagerEntry", fileManagerEntrySchema);
 
 // src/modules/file-manager/storage-adapter.ts
 var import_node_fs2 = __toESM(require("node:fs"), 1);
@@ -3675,7 +3733,7 @@ function parseNullableObjectId(value, fieldLabel) {
   if (!isStrictObjectId(value)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, `Invalid ${fieldLabel}`);
   }
-  return new import_mongoose15.default.Types.ObjectId(value);
+  return new import_mongoose16.default.Types.ObjectId(value);
 }
 function extractExtension(name) {
   const dotIndex = name.lastIndexOf(".");
@@ -4242,12 +4300,12 @@ var fileManagerRoutes = router6;
 // src/modules/job/job.routes.ts
 var import_express_rate_limit8 = __toESM(require("express-rate-limit"), 1);
 var import_express8 = require("express");
-var import_mongoose17 = __toESM(require("mongoose"), 1);
+var import_mongoose18 = __toESM(require("mongoose"), 1);
 var import_zod9 = require("zod");
 
 // src/modules/job/job.models.ts
-var import_mongoose16 = __toESM(require("mongoose"), 1);
-var jobPostingSchema = new import_mongoose16.Schema(
+var import_mongoose17 = __toESM(require("mongoose"), 1);
+var jobPostingSchema = new import_mongoose17.Schema(
   {
     title: { type: String, required: true, maxlength: 300, trim: true },
     description: { type: String, required: true, maxlength: 1e4 },
@@ -4280,10 +4338,10 @@ var jobPostingSchema = new import_mongoose16.Schema(
   { timestamps: true }
 );
 jobPostingSchema.index({ status: 1, createdAt: -1 });
-var JobPostingModel = import_mongoose16.default.models.JobPosting ?? import_mongoose16.default.model("JobPosting", jobPostingSchema);
-var jobApplicationSchema = new import_mongoose16.Schema(
+var JobPostingModel = import_mongoose17.default.models.JobPosting ?? import_mongoose17.default.model("JobPosting", jobPostingSchema);
+var jobApplicationSchema = new import_mongoose17.Schema(
   {
-    jobId: { type: import_mongoose16.Schema.Types.ObjectId, ref: "JobPosting", required: true, index: true },
+    jobId: { type: import_mongoose17.Schema.Types.ObjectId, ref: "JobPosting", required: true, index: true },
     applicantName: { type: String, required: true, maxlength: 200, trim: true },
     applicantEmail: { type: String, required: true, lowercase: true, trim: true },
     resumeUrl: { type: String, maxlength: 2e3 },
@@ -4301,7 +4359,7 @@ var jobApplicationSchema = new import_mongoose16.Schema(
 );
 jobApplicationSchema.index({ jobId: 1, status: 1 });
 jobApplicationSchema.index({ jobId: 1, applicantEmail: 1 }, { unique: true });
-var JobApplicationModel = import_mongoose16.default.models.JobApplication ?? import_mongoose16.default.model("JobApplication", jobApplicationSchema);
+var JobApplicationModel = import_mongoose17.default.models.JobApplication ?? import_mongoose17.default.model("JobApplication", jobApplicationSchema);
 
 // src/modules/job/job.routes.ts
 var router7 = (0, import_express8.Router)();
@@ -4363,7 +4421,7 @@ var applicationSubmitRateLimiter = (0, import_express_rate_limit8.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId7(id) {
-  if (!import_mongoose17.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose18.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -4735,12 +4793,12 @@ var jobRoutes = router7;
 // src/modules/mailbox/mailbox.routes.ts
 var import_express_rate_limit9 = __toESM(require("express-rate-limit"), 1);
 var import_express9 = require("express");
-var import_mongoose19 = __toESM(require("mongoose"), 1);
+var import_mongoose20 = __toESM(require("mongoose"), 1);
 var import_zod10 = require("zod");
 
 // src/modules/mailbox/mailbox.models.ts
-var import_mongoose18 = __toESM(require("mongoose"), 1);
-var mailboxMessageSchema = new import_mongoose18.Schema(
+var import_mongoose19 = __toESM(require("mongoose"), 1);
+var mailboxMessageSchema = new import_mongoose19.Schema(
   {
     subject: { type: String, required: true, trim: true, maxlength: 300 },
     body: { type: String, required: true, maxlength: 5e4 },
@@ -4770,14 +4828,14 @@ var mailboxMessageSchema = new import_mongoose18.Schema(
       default: []
     },
     externalMessageId: { type: String },
-    inReplyToId: { type: import_mongoose18.Schema.Types.ObjectId, ref: "MailboxMessage" },
+    inReplyToId: { type: import_mongoose19.Schema.Types.ObjectId, ref: "MailboxMessage" },
     ownerUserId: { type: String, required: true, index: true },
     sentAt: { type: Date }
   },
   { timestamps: true }
 );
 mailboxMessageSchema.index({ ownerUserId: 1, folder: 1, createdAt: -1 });
-var MailboxMessageModel = import_mongoose18.default.models.MailboxMessage ?? import_mongoose18.default.model("MailboxMessage", mailboxMessageSchema);
+var MailboxMessageModel = import_mongoose19.default.models.MailboxMessage ?? import_mongoose19.default.model("MailboxMessage", mailboxMessageSchema);
 
 // src/modules/mailbox/mail-adapter.ts
 var import_nodemailer = __toESM(require("nodemailer"), 1);
@@ -4901,7 +4959,7 @@ var mailboxWriteRateLimiter = (0, import_express_rate_limit9.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId8(id) {
-  if (!import_mongoose19.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose20.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -4945,7 +5003,7 @@ router8.post(
       let inReplyToObjectId = void 0;
       if (payload.inReplyToId) {
         ensureValidObjectId8(payload.inReplyToId);
-        inReplyToObjectId = new import_mongoose19.default.Types.ObjectId(payload.inReplyToId);
+        inReplyToObjectId = new import_mongoose20.default.Types.ObjectId(payload.inReplyToId);
       }
       const message = await MailboxMessageModel.create({
         subject: payload.subject.trim(),
@@ -5230,23 +5288,10 @@ router8.post(
 var mailboxRoutes = router8;
 
 // src/modules/system/auth.routes.ts
-var import_bcryptjs = __toESM(require("bcryptjs"), 1);
+var import_bcryptjs2 = __toESM(require("bcryptjs"), 1);
 var import_express10 = require("express");
 var import_express_rate_limit10 = __toESM(require("express-rate-limit"), 1);
 var import_zod11 = require("zod");
-
-// src/core/auth/user.model.ts
-var import_mongoose20 = __toESM(require("mongoose"), 1);
-var userSchema = new import_mongoose20.Schema(
-  {
-    email: { type: String, required: true, unique: true },
-    passwordHash: { type: String, required: true },
-    role: { type: String, enum: ["super_admin", "admin"], required: true },
-    customRoleId: { type: String, default: void 0 }
-  },
-  { timestamps: true }
-);
-var UserModel = import_mongoose20.default.models.User ?? import_mongoose20.default.model("User", userSchema);
 
 // src/modules/rbac/employee.model.ts
 var import_mongoose21 = __toESM(require("mongoose"), 1);
@@ -5355,7 +5400,7 @@ router9.post("/api/v1/auth/login", loginRateLimiter, async (req, res, next) => {
     if (!user) {
       throw new AppError(401, ERROR_CODES.UNAUTHORIZED, "Invalid credentials");
     }
-    const isValid = await import_bcryptjs.default.compare(password, user.passwordHash);
+    const isValid = await import_bcryptjs2.default.compare(password, user.passwordHash);
     if (!isValid) {
       throw new AppError(401, ERROR_CODES.UNAUTHORIZED, "Invalid credentials");
     }
@@ -7110,7 +7155,7 @@ router14.patch(
 var menuRoutes = router14;
 
 // src/modules/system/system.routes.ts
-var import_bcryptjs2 = __toESM(require("bcryptjs"), 1);
+var import_bcryptjs3 = __toESM(require("bcryptjs"), 1);
 var import_express16 = require("express");
 var import_express_rate_limit15 = __toESM(require("express-rate-limit"), 1);
 var import_zod17 = require("zod");
@@ -8208,7 +8253,7 @@ router15.post(
         );
         return;
       }
-      const passwordHash = await import_bcryptjs2.default.hash(password, 10);
+      const passwordHash = await import_bcryptjs3.default.hash(password, 10);
       const user = await UserModel.create({ email, passwordHash, role });
       await auditLogService.log({
         action: "CREATE",
@@ -8243,7 +8288,7 @@ router15.put(
       if (payload.email) update.email = payload.email;
       if (payload.role) update.role = payload.role;
       if (payload.password)
-        update.passwordHash = await import_bcryptjs2.default.hash(payload.password, 10);
+        update.passwordHash = await import_bcryptjs3.default.hash(payload.password, 10);
       if (Object.keys(update).length === 0) {
         next(new AppError(400, ERROR_CODES.BAD_REQUEST, "No fields to update"));
         return;
@@ -12580,7 +12625,7 @@ router23.get("/api/v1/whatsapp/inbox/search", ...moduleGuards("whatsapp", "whats
 var inboxRoutes = router23;
 
 // src/modules/rbac/rbac.routes.ts
-var import_bcryptjs3 = __toESM(require("bcryptjs"), 1);
+var import_bcryptjs4 = __toESM(require("bcryptjs"), 1);
 var import_mongoose62 = __toESM(require("mongoose"), 1);
 var import_express25 = require("express");
 var import_zod25 = require("zod");
@@ -13042,7 +13087,7 @@ router24.post("/api/v1/rbac/employees", ...AUTH, async (req, res, next) => {
     }
     const existingUser = await UserModel.findOne({ email: data.emailOffice }).lean().exec();
     if (existingUser) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "A user with this email already exists.");
-    const passwordHash = await import_bcryptjs3.default.hash(data.password, 10);
+    const passwordHash = await import_bcryptjs4.default.hash(data.password, 10);
     const user = await UserModel.create({
       email: data.emailOffice,
       passwordHash,
