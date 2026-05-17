@@ -642,6 +642,7 @@ var UserModel = import_mongoose2.default.models.User ?? import_mongoose2.default
 
 // src/middleware/swagger.ts
 var BASIC_REALM = 'Basic realm="Admin API Docs", charset="UTF-8"';
+var SWAGGER_UI_VERSION = "5.17.14";
 function requireBasic(res, message) {
   res.set("WWW-Authenticate", BASIC_REALM);
   res.status(401).json({ code: "UNAUTHORIZED", message });
@@ -691,6 +692,42 @@ async function docsAuth(req, res, next) {
   }
   requireBasic(res, "Use Basic auth or Bearer token");
 }
+function renderDocsHtml() {
+  const cdn = `https://unpkg.com/swagger-ui-dist@${SWAGGER_UI_VERSION}`;
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Admin Platform API Docs</title>
+    <link rel="stylesheet" href="${cdn}/swagger-ui.css" />
+    <style>
+      body { margin: 0; background: #fafafa; }
+      .swagger-ui .topbar { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="${cdn}/swagger-ui-bundle.js" crossorigin></script>
+    <script src="${cdn}/swagger-ui-standalone-preset.js" crossorigin></script>
+    <script>
+      window.ui = SwaggerUIBundle({
+        url: "/api/docs.json",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: "StandaloneLayout",
+        requestInterceptor: function (req) {
+          // Re-use the page's Basic auth credentials on Try-It-Out calls so
+          // every /api/v1/* test request from the browser is authenticated
+          // with the same session the user opened the docs with.
+          req.credentials = "include";
+          return req;
+        }
+      });
+    </script>
+  </body>
+</html>`;
+}
 async function mountSwagger(app) {
   const enabled = env.NODE_ENV !== "production" || env.ENABLE_API_DOCS === "true";
   if (!enabled) {
@@ -708,20 +745,20 @@ async function mountSwagger(app) {
       logger.info("Swagger UI skipped: openapi.yaml not found");
       return;
     }
-    const [YAML, swaggerUi] = await Promise.all([
-      import("yaml"),
-      import("swagger-ui-express")
-    ]);
+    const YAML = await import("yaml");
     const specContent = import_node_fs.default.readFileSync(specPath, "utf-8");
     const spec = YAML.parse(specContent);
-    const handlers = [];
+    const gate = [];
     if (env.NODE_ENV === "production") {
-      handlers.push(docsAuth);
+      gate.push(docsAuth);
     }
-    app.use("/api/docs", ...handlers, swaggerUi.serve, swaggerUi.setup(spec, {
-      customSiteTitle: "Admin Platform API Docs",
-      customCss: ".swagger-ui .topbar { display: none }"
-    }));
+    const html = renderDocsHtml();
+    app.get("/api/docs", ...gate, (_req, res) => {
+      res.type("html").send(html);
+    });
+    app.get("/api/docs.json", ...gate, (_req, res) => {
+      res.json(spec);
+    });
     const mode = env.NODE_ENV === "production" ? "super_admin-only (Basic or Bearer)" : "open";
     logger.info(`Swagger UI mounted at /api/docs (${mode}, spec: ${specPath})`);
   } catch (err) {

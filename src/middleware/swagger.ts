@@ -9,18 +9,25 @@ import type { AuthenticatedRequest } from "../core/auth/auth.types";
 import { UserModel } from "../core/auth/user.model";
 
 /**
- * Mount Swagger UI at `/api/docs`.
+ * Mount Swagger UI at GET /api/docs.
+ *
+ * We deliberately avoid swagger-ui-express's static-file middleware because it
+ * issues a 301 to add a trailing slash, and Vercel re-strips trailing slashes
+ * — producing an infinite redirect loop. Instead we serve a tiny HTML shell
+ * that loads swagger-ui assets from a CDN, plus a sibling JSON endpoint that
+ * returns the spec. Both routes share the same auth gate.
  *
  * Enabled when:
  *   - NODE_ENV !== "production"  (always available in dev/test)
  *   - OR ENABLE_API_DOCS=true    (opt-in for production)
  *
- * In production, access is restricted to super_admin users. The route accepts
- * either a Bearer JWT (programmatic clients) or HTTP Basic auth (browser
- * sign-in prompt). The OpenAPI spec is loaded from `docs/api/openapi.yaml`.
+ * In production both routes accept either a Bearer JWT or HTTP Basic auth
+ * with a super_admin email + password. Browsers receive a native sign-in
+ * prompt via WWW-Authenticate.
  */
 
 const BASIC_REALM = 'Basic realm="Admin API Docs", charset="UTF-8"';
+const SWAGGER_UI_VERSION = "5.17.14";
 
 function requireBasic(res: Response, message: string): void {
   res.set("WWW-Authenticate", BASIC_REALM);
@@ -81,6 +88,43 @@ async function docsAuth(req: Request, res: Response, next: NextFunction): Promis
   requireBasic(res, "Use Basic auth or Bearer token");
 }
 
+function renderDocsHtml(): string {
+  const cdn = `https://unpkg.com/swagger-ui-dist@${SWAGGER_UI_VERSION}`;
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Admin Platform API Docs</title>
+    <link rel="stylesheet" href="${cdn}/swagger-ui.css" />
+    <style>
+      body { margin: 0; background: #fafafa; }
+      .swagger-ui .topbar { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="${cdn}/swagger-ui-bundle.js" crossorigin></script>
+    <script src="${cdn}/swagger-ui-standalone-preset.js" crossorigin></script>
+    <script>
+      window.ui = SwaggerUIBundle({
+        url: "/api/docs.json",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: "StandaloneLayout",
+        requestInterceptor: function (req) {
+          // Re-use the page's Basic auth credentials on Try-It-Out calls so
+          // every /api/v1/* test request from the browser is authenticated
+          // with the same session the user opened the docs with.
+          req.credentials = "include";
+          return req;
+        }
+      });
+    </script>
+  </body>
+</html>`;
+}
+
 export async function mountSwagger(app: Express): Promise<void> {
   const enabled =
     env.NODE_ENV !== "production" || env.ENABLE_API_DOCS === "true";
@@ -103,24 +147,23 @@ export async function mountSwagger(app: Express): Promise<void> {
       return;
     }
 
-    const [YAML, swaggerUi] = await Promise.all([
-      import("yaml"),
-      import("swagger-ui-express"),
-    ]);
-
+    const YAML = await import("yaml");
     const specContent = fs.readFileSync(specPath, "utf-8");
     const spec = YAML.parse(specContent);
 
-    const handlers: Array<(req: Request, res: Response, next: NextFunction) => void> = [];
-
+    const gate: Array<(req: Request, res: Response, next: NextFunction) => void> = [];
     if (env.NODE_ENV === "production") {
-      handlers.push(docsAuth as (req: Request, res: Response, next: NextFunction) => void);
+      gate.push(docsAuth as (req: Request, res: Response, next: NextFunction) => void);
     }
 
-    app.use("/api/docs", ...handlers, swaggerUi.serve, swaggerUi.setup(spec, {
-      customSiteTitle: "Admin Platform API Docs",
-      customCss: ".swagger-ui .topbar { display: none }",
-    }));
+    const html = renderDocsHtml();
+
+    app.get("/api/docs", ...gate, (_req, res) => {
+      res.type("html").send(html);
+    });
+    app.get("/api/docs.json", ...gate, (_req, res) => {
+      res.json(spec);
+    });
 
     const mode = env.NODE_ENV === "production" ? "super_admin-only (Basic or Bearer)" : "open";
     logger.info(`Swagger UI mounted at /api/docs (${mode}, spec: ${specPath})`);
