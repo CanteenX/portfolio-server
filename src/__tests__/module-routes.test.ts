@@ -14,7 +14,7 @@ process.env.TRUST_PROXY = "1";
 process.env.ENABLE_SEED = "false";
 
 const { createApp } = await import("../app");
-const app = createApp();
+const app = await createApp();
 
 const moduleEndpoints = [
   { module: "chat", path: "/api/v1/chat/conversations" },

@@ -15,7 +15,7 @@ process.env.TRUST_PROXY = "1";
 process.env.ENABLE_SEED = "false";
 
 const { createApp } = await import("../app");
-const app = createApp();
+const app = await createApp();
 
 function makeToken(role: "super_admin" | "admin") {
   const secret = role === "super_admin" ? process.env.JWT_SECRET_SUPER_ADMIN! : process.env.JWT_SECRET_ADMIN!;

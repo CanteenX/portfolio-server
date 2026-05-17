@@ -14,7 +14,7 @@ process.env.TRUST_PROXY = "1";
 process.env.ENABLE_SEED = "false";
 
 const { createApp } = await import("../app");
-const app = createApp();
+const app = await createApp();
 
 describe("security baseline", () => {
   it("returns health response without auth", async () => {
