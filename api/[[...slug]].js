@@ -754,6 +754,10 @@ async function mountSwagger(app) {
     }
     const html = renderDocsHtml();
     app.get("/api/docs", ...gate, (_req, res) => {
+      res.set(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https:; font-src 'self' https://unpkg.com data:; connect-src 'self'"
+      );
       res.type("html").send(html);
     });
     app.get("/api/docs.json", ...gate, (_req, res) => {

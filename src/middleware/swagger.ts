@@ -159,6 +159,11 @@ export async function mountSwagger(app: Express): Promise<void> {
     const html = renderDocsHtml();
 
     app.get("/api/docs", ...gate, (_req, res) => {
+      // Allow loading swagger-ui assets from the CDN and inline init script.
+      res.set(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https:; font-src 'self' https://unpkg.com data:; connect-src 'self'"
+      );
       res.type("html").send(html);
     });
     app.get("/api/docs.json", ...gate, (_req, res) => {
