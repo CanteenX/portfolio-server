@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import { Router } from "express";
 import mongoose from "mongoose";
 import multer from "multer";
+import { put as putBlob } from "@vercel/blob";
 import { z } from "zod";
 import { env } from "../../config/env";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
@@ -20,24 +21,20 @@ const writeRateLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders:
 const uploadDir = path.isAbsolute(env.FILE_UPLOAD_DIR)
   ? path.join(env.FILE_UPLOAD_DIR, "portfolio")
   : path.join(process.cwd(), env.FILE_UPLOAD_DIR, "portfolio");
-try {
-  fs.mkdirSync(uploadDir, { recursive: true });
-} catch {
-  // Filesystem may be read-only (e.g. Vercel /var/task). Multer init below will fail loudly only when used.
+
+const useBlob = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+if (!useBlob) {
+  try {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  } catch {
+    // Filesystem may be read-only — only reached if the env is misconfigured.
+  }
 }
 
 const ALLOWED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"]);
 
-const storage = multer.diskStorage({
-  destination: uploadDir,
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || ".bin";
-    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  }
-});
-
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_IMAGE_MIMES.has(file.mimetype)) {
@@ -49,16 +46,33 @@ const upload = multer({
 });
 
 // ── Image upload (auth required) ──────────────────────────────────────────────
+// In production (BLOB_READ_WRITE_TOKEN present) uploads go to Vercel Blob and
+// the response carries an absolute https URL. Locally we still write to disk
+// and serve via /uploads/portfolio/<file>.
 
 router.post(
   "/api/v1/portfolio/upload/image",
   writeRateLimiter,
   authenticateJwt,
   upload.single("image"),
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       if (!req.file) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "No image uploaded");
-      res.json({ url: `/uploads/portfolio/${req.file.filename}` });
+      const ext = path.extname(req.file.originalname).toLowerCase() || ".bin";
+      const baseName = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+
+      if (useBlob) {
+        const blob = await putBlob(`portfolio/${baseName}`, req.file.buffer, {
+          access: "public",
+          contentType: req.file.mimetype,
+        });
+        res.json({ url: blob.url });
+        return;
+      }
+
+      const diskPath = path.join(uploadDir, baseName);
+      fs.writeFileSync(diskPath, req.file.buffer);
+      res.json({ url: `/uploads/portfolio/${baseName}` });
     } catch (error) {
       next(error);
     }

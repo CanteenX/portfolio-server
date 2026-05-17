@@ -14080,6 +14080,7 @@ var import_express_rate_limit23 = __toESM(require("express-rate-limit"), 1);
 var import_express30 = require("express");
 var import_mongoose71 = __toESM(require("mongoose"), 1);
 var import_multer2 = __toESM(require("multer"), 1);
+var import_blob = require("@vercel/blob");
 var import_zod30 = require("zod");
 
 // src/modules/portfolio/portfolio-masters.models.ts
@@ -14127,20 +14128,16 @@ var ClientModel = import_mongoose70.default.models.PortfolioClient ?? import_mon
 var router29 = (0, import_express30.Router)();
 var writeRateLimiter4 = (0, import_express_rate_limit23.default)({ windowMs: 6e4, max: 60, standardHeaders: true, legacyHeaders: false });
 var uploadDir = import_node_path4.default.isAbsolute(env.FILE_UPLOAD_DIR) ? import_node_path4.default.join(env.FILE_UPLOAD_DIR, "portfolio") : import_node_path4.default.join(process.cwd(), env.FILE_UPLOAD_DIR, "portfolio");
-try {
-  import_node_fs4.default.mkdirSync(uploadDir, { recursive: true });
-} catch {
+var useBlob = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+if (!useBlob) {
+  try {
+    import_node_fs4.default.mkdirSync(uploadDir, { recursive: true });
+  } catch {
+  }
 }
 var ALLOWED_IMAGE_MIMES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"]);
-var storage = import_multer2.default.diskStorage({
-  destination: uploadDir,
-  filename: (_req, file, cb) => {
-    const ext = import_node_path4.default.extname(file.originalname).toLowerCase() || ".bin";
-    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  }
-});
 var upload2 = (0, import_multer2.default)({
-  storage,
+  storage: import_multer2.default.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_IMAGE_MIMES.has(file.mimetype)) {
@@ -14155,10 +14152,22 @@ router29.post(
   writeRateLimiter4,
   authenticateJwt,
   upload2.single("image"),
-  (req, res, next) => {
+  async (req, res, next) => {
     try {
       if (!req.file) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "No image uploaded");
-      res.json({ url: `/uploads/portfolio/${req.file.filename}` });
+      const ext = import_node_path4.default.extname(req.file.originalname).toLowerCase() || ".bin";
+      const baseName = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+      if (useBlob) {
+        const blob = await (0, import_blob.put)(`portfolio/${baseName}`, req.file.buffer, {
+          access: "public",
+          contentType: req.file.mimetype
+        });
+        res.json({ url: blob.url });
+        return;
+      }
+      const diskPath = import_node_path4.default.join(uploadDir, baseName);
+      import_node_fs4.default.writeFileSync(diskPath, req.file.buffer);
+      res.json({ url: `/uploads/portfolio/${baseName}` });
     } catch (error) {
       next(error);
     }
