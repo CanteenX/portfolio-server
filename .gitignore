@@ -4,3 +4,5 @@ dist/
 uploads/
 *.log
 .turbo/
+.vercel
+api/

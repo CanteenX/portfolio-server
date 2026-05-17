@@ -1,7 +1,6 @@
 import { type Express, type NextFunction, type Request, type Response } from "express";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { env } from "../config/env";
 import { logger } from "../core/logging/logger";
 import { authenticateJwt } from "../core/auth/auth.middleware";
@@ -18,11 +17,8 @@ import type { AuthenticatedRequest } from "../core/auth/auth.types";
  * super_admin users via JWT authentication. In dev/test, access is open.
  *
  * The OpenAPI spec is loaded from `docs/api/openapi.yaml` relative
- * to the monorepo root (two directories up from dist/src).
+ * to the project root.
  */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 export async function mountSwagger(app: Express): Promise<void> {
   const enabled =
     env.NODE_ENV !== "production" || env.ENABLE_API_DOCS === "true";
@@ -32,13 +28,11 @@ export async function mountSwagger(app: Express): Promise<void> {
   }
 
   try {
-    // Resolve spec file relative to project structure.
-    // Runtime CWD is typically the monorepo root or apps/admin-backend.
+    const cwd = process.cwd();
     const candidates = [
-      path.resolve(process.cwd(), "docs/api/openapi.yaml"),
-      path.resolve(process.cwd(), "../../docs/api/openapi.yaml"),
-      path.resolve(__dirname, "../../../docs/api/openapi.yaml"),
-      path.resolve(__dirname, "../../../../../docs/api/openapi.yaml"),
+      path.resolve(cwd, "docs/api/openapi.yaml"),
+      path.resolve(cwd, "../docs/api/openapi.yaml"),
+      path.resolve(cwd, "../../docs/api/openapi.yaml"),
     ];
 
     const specPath = candidates.find((p) => fs.existsSync(p));

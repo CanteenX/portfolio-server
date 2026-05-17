@@ -1,4 +1,3 @@
-import bcrypt from "bcryptjs";
 import { UserModel } from "../core/auth/user.model";
 import { CustomRoleModel } from "../core/rbac/custom-role.model";
 import { CrmContactModel, CrmPipelineModel, CrmDealModel } from "../modules/crm/crm.models";
@@ -21,42 +20,20 @@ import { seedPortfolioData } from "../modules/portfolio/portfolio.seed";
 export async function seedModuleData(): Promise<void> {
   logger.info("Starting module data seeding...");
 
-  // Get existing users
-  const superadmin = await UserModel.findOne({ email: "superadmin@admin.local" }).exec();
-  const admin = await UserModel.findOne({ email: "admin@admin.local" }).exec();
+  // Look up existing users by role (any super_admin / any admin)
+  const superadmin = await UserModel.findOne({ role: "super_admin" }).exec();
+  const admin = await UserModel.findOne({ role: "admin" }).exec();
 
   if (!superadmin || !admin) {
-    logger.warn("Baseline users not found. Skipping module data seed.");
+    logger.warn("No super_admin/admin users found. Skipping module data seed.");
     return;
   }
 
   const superadminId = superadmin._id.toString();
   const adminId = admin._id.toString();
-
-  // Seed Additional Users
-  if ((await UserModel.countDocuments()) <= 2) {
-    const passwordHash = await bcrypt.hash(env.ADMIN_SEED_PASSWORD!, 10);
-
-    const sarah = await UserModel.create({
-      email: "sarah.wilson@admin.local",
-      passwordHash,
-      role: "admin"
-    });
-
-    const james = await UserModel.create({
-      email: "james.chen@admin.local",
-      passwordHash,
-      role: "admin"
-    });
-
-    logger.info(`Seeded additional users: sarah.wilson@admin.local, james.chen@admin.local`);
-  }
-
-  // Get all users for later reference
-  const sarah = await UserModel.findOne({ email: "sarah.wilson@admin.local" }).exec();
-  const james = await UserModel.findOne({ email: "james.chen@admin.local" }).exec();
-  const sarahId = sarah?._id.toString() || superadminId;
-  const jamesId = james?._id.toString() || adminId;
+  // Re-use the two real users for legacy seed references
+  const sarahId = adminId;
+  const jamesId = adminId;
 
   // Seed Custom Roles
   if ((await CustomRoleModel.countDocuments()) === 0) {

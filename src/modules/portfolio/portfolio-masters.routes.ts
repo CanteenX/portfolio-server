@@ -17,8 +17,14 @@ const writeRateLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders:
 
 // ── Upload setup ──────────────────────────────────────────────────────────────
 
-const uploadDir = path.join(process.cwd(), env.FILE_UPLOAD_DIR, "portfolio");
-fs.mkdirSync(uploadDir, { recursive: true });
+const uploadDir = path.isAbsolute(env.FILE_UPLOAD_DIR)
+  ? path.join(env.FILE_UPLOAD_DIR, "portfolio")
+  : path.join(process.cwd(), env.FILE_UPLOAD_DIR, "portfolio");
+try {
+  fs.mkdirSync(uploadDir, { recursive: true });
+} catch {
+  // Filesystem may be read-only (e.g. Vercel /var/task). Multer init below will fail loudly only when used.
+}
 
 const ALLOWED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"]);
 

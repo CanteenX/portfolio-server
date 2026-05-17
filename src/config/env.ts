@@ -14,8 +14,6 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:3001,http://localhost:5173"),
   TRUST_PROXY: z.string().default("0"),
   ENABLE_SEED: z.enum(["true", "false"]).default("false"),
-  SUPER_ADMIN_SEED_PASSWORD: z.string().min(8).optional(),
-  ADMIN_SEED_PASSWORD: z.string().min(8).optional(),
   API_KEY_HASH_SALT: z.string().min(16).default("replace_api_key_hash_salt"),
   PAYMENT_DEFAULT_SUCCESS_URL: z.string().url().default("http://localhost:5173/payment/success"),
   PAYMENT_DEFAULT_CANCEL_URL: z.string().url().default("http://localhost:5173/payment/cancel"),
@@ -71,36 +69,6 @@ const envSchema = z.object({
       message: "JWT secrets for super admin and admin must be different",
       path: ["JWT_SECRET_ADMIN"]
     });
-  }
-
-  if (data.ENABLE_SEED === "true") {
-    if (!data.SUPER_ADMIN_SEED_PASSWORD) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "SUPER_ADMIN_SEED_PASSWORD is required when ENABLE_SEED=true",
-        path: ["SUPER_ADMIN_SEED_PASSWORD"]
-      });
-    } else if (data.NODE_ENV === "production" && data.SUPER_ADMIN_SEED_PASSWORD.length < 12) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "SUPER_ADMIN_SEED_PASSWORD must be at least 12 characters in production",
-        path: ["SUPER_ADMIN_SEED_PASSWORD"]
-      });
-    }
-
-    if (!data.ADMIN_SEED_PASSWORD) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "ADMIN_SEED_PASSWORD is required when ENABLE_SEED=true",
-        path: ["ADMIN_SEED_PASSWORD"]
-      });
-    } else if (data.NODE_ENV === "production" && data.ADMIN_SEED_PASSWORD.length < 12) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "ADMIN_SEED_PASSWORD must be at least 12 characters in production",
-        path: ["ADMIN_SEED_PASSWORD"]
-      });
-    }
   }
 
   if (data.NODE_ENV === "production" && data.API_KEY_HASH_SALT === "replace_api_key_hash_salt") {

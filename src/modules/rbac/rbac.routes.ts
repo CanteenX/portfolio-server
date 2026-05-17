@@ -110,7 +110,7 @@ router.post("/api/v1/rbac/menus", ...SUPER_ONLY, async (req: AuthenticatedReques
     const data = menuMasterSchema.parse(req.body);
     const parentId = data.parentMenu ? new mongoose.Types.ObjectId(data.parentMenu) : null;
     if (parentId) {
-      const parent = await MenuMasterModel.findOne({ _id: parentId, clientCode: env.CLIENT_CODE }).lean().exec();
+      const parent = await MenuMasterModel.findOne({ _id: parentId, clientCode: env.CLIENT_CODE }).lean<MenuMasterDocument>().exec();
       if (!parent) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Parent menu not found.");
       if (!parent.isParentMenu) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Selected parent menu is not marked as a parent (dropdown).");
     }
@@ -139,7 +139,7 @@ router.put("/api/v1/rbac/menus/:id", ...SUPER_ONLY, async (req: AuthenticatedReq
       if (parentId.toString() === req.params.id) {
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "A menu cannot be its own parent.");
       }
-      const parent = await MenuMasterModel.findOne({ _id: parentId, clientCode: env.CLIENT_CODE }).lean().exec();
+      const parent = await MenuMasterModel.findOne({ _id: parentId, clientCode: env.CLIENT_CODE }).lean<MenuMasterDocument>().exec();
       if (!parent) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Parent menu not found.");
       if (!parent.isParentMenu) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Selected parent menu is not marked as a parent (dropdown).");
     }

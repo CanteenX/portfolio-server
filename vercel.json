@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "pnpm typecheck && pnpm build:vercel",
+  "installCommand": "pnpm install --frozen-lockfile --prod=false",
+  "framework": null,
+  "functions": {
+    "api/[[...slug]].js": {
+      "memory": 1024,
+      "maxDuration": 30,
+      "includeFiles": "docs/api/**"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/[[...slug]]" },
+    { "source": "/uploads/(.*)", "destination": "/api/[[...slug]]" }
+  ]
+}
