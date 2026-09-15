@@ -259,11 +259,30 @@ async function backfillAdminEmployees(menuIds: mongoose.Types.ObjectId[]): Promi
       .exec();
 
     if (existing) {
-      // Adopt an orphan: a row with no role grants nothing, which is the
-      // lockout this backfill exists to prevent.
       const typed = existing as { _id: mongoose.Types.ObjectId; roleId?: mongoose.Types.ObjectId | null };
-      if (!typed.roleId) {
+
+      // No role at all, or a role that grants literally nothing. Both mean the
+      // same thing now that enforcement exists: this admin can reach no screen.
+      //
+      // A zero-grant role is not a deliberate restriction — before this branch
+      // there was no permission check on the portfolio routes, so nobody ever
+      // had a reason to populate one. Leaving it alone would silently revoke
+      // access that worked yesterday, which is the exact lockout this backfill
+      // exists to prevent.
+      const currentGrants = typed.roleId
+        ? ((
+            (await RoleMasterModel.findById(typed.roleId).select("permissions").lean().exec()) as {
+              permissions?: { granted: boolean }[];
+            } | null
+          )?.permissions ?? []).filter((p) => p.granted).length
+        : 0;
+
+      if (currentGrants === 0) {
         await EmployeeModel.updateOne({ _id: typed._id }, { $set: { roleId: role._id } }).exec();
+        logger.warn("Admin had no effective permissions — moved to the Administrator role", {
+          email: admin.email
+        });
+        created += 1;
       }
       continue;
     }
@@ -303,6 +322,26 @@ export async function seedRbacBaseline(): Promise<void> {
   const grantableMenuIds: mongoose.Types.ObjectId[] = [];
 
   for (const root of MENU_TREE) {
+    const children = root.children ?? [];
+
+    // If these screens are already registered — under a section this seed did
+    // not create — adopt the existing rows instead of building a parallel
+    // section beside them. Menus resolve BY URL, so the grants are correct
+    // either way; creating the root regardless is what left empty duplicate
+    // sections ("Portfolio CMS", "Modules") sitting next to the real ones.
+    const existingChildren = (await MenuMasterModel.find({
+      clientCode: env.CLIENT_CODE,
+      menuUrl: { $in: children.map((c) => c.menuUrl) }
+    })
+      .select("_id")
+      .lean()
+      .exec()) as { _id: mongoose.Types.ObjectId }[];
+
+    if (children.length > 0 && existingChildren.length === children.length) {
+      grantableMenuIds.push(...existingChildren.map((c) => c._id));
+      continue;
+    }
+
     const { id: rootId, created } = await upsertMenu(root.menuUrl, {
       menuName: root.menuName,
       icon: root.icon,
@@ -327,6 +366,32 @@ export async function seedRbacBaseline(): Promise<void> {
       // page, so granting actions on it would mean nothing.
       grantableMenuIds.push(childResult.id);
     }
+  }
+
+  // Remove placeholder sections this seed created that ended up with no
+  // children, because their screens were already registered elsewhere. Only
+  // the "#"-prefixed URLs are touched: those are this seed's own placeholders,
+  // never a real navigable route, so nothing else can own them.
+  const placeholderUrls = MENU_TREE.map((root) => root.menuUrl).filter((url) => url.startsWith("#"));
+  const emptyPlaceholders = (await MenuMasterModel.find({
+    clientCode: env.CLIENT_CODE,
+    menuUrl: { $in: placeholderUrls }
+  })
+    .select("_id menuUrl")
+    .lean()
+    .exec()) as unknown as { _id: mongoose.Types.ObjectId; menuUrl: string }[];
+
+  let removed = 0;
+  for (const placeholder of emptyPlaceholders) {
+    const childCount = await MenuMasterModel.countDocuments({ parentMenu: placeholder._id }).exec();
+    if (childCount === 0) {
+      await MenuMasterModel.deleteOne({ _id: placeholder._id }).exec();
+      removed += 1;
+    }
+  }
+  if (removed > 0) {
+    invalidateRbacLookups();
+    logger.info("Removed empty placeholder menu sections", { removed });
   }
 
   const employeesCreated = await backfillAdminEmployees(grantableMenuIds);
