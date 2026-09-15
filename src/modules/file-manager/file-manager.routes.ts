@@ -245,14 +245,17 @@ async function ensureMoveDoesNotCreateCycle(
 router.get(
   "/api/v1/file-manager/entries",
   ...moduleGuards("file-manager", "file-manager.read"),
-  async (req, res, next) => {
+  async (req: AuthenticatedRequest, res, next) => {
     try {
       const query = listEntriesQuerySchema.parse(req.query ?? {});
       const parentId = parseNullableObjectId(query.parentId, "parentId");
       const skip = (query.page - 1) * query.limit;
 
+      // Scoped to the caller: the quota model is per user, so listing another
+      // user's entries here is what made every :id route below reachable.
       const filter: Record<string, unknown> = {
-        parentId
+        parentId,
+        createdByUserId: req.user!.id
       };
 
       if (query.status !== "all") {
@@ -374,7 +377,7 @@ router.patch(
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
       const payload = updateEntrySchema.parse(req.body ?? {});
-      const existing = await FileManagerEntryModel.findById(req.params.id).exec();
+      const existing = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user!.id }).exec();
       if (!existing) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -426,7 +429,7 @@ router.post(
       }
       const payload = moveEntrySchema.parse(req.body ?? {});
       const targetParentId = parseNullableObjectId(payload.targetParentId, "targetParentId");
-      const entry = await FileManagerEntryModel.findById(req.params.id).exec();
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user!.id }).exec();
       if (!entry) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -464,7 +467,7 @@ router.post(
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
       const payload = transitionEntrySchema.parse(req.body ?? {});
-      const entry = await FileManagerEntryModel.findById(req.params.id).exec();
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user!.id }).exec();
       if (!entry) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -505,12 +508,12 @@ router.delete(
   "/api/v1/file-manager/entries/:id",
   fileManagerWriteRateLimiter,
   ...moduleGuards("file-manager", "file-manager.delete"),
-  async (req, res, next) => {
+  async (req: AuthenticatedRequest, res, next) => {
     try {
       if (!isStrictObjectId(req.params.id)) {
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
-      const entry = await FileManagerEntryModel.findById(req.params.id).exec();
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user!.id }).exec();
       if (!entry) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -616,7 +619,7 @@ router.post(
 
       const storageKey = generateStorageKey(req.user!.id, file.originalname);
       const adapter = getStorageAdapter();
-      const storagePath = await adapter.store(storageKey, file.path);
+      const storagePath = await adapter.store(storageKey, file.buffer);
 
       const originalName = file.originalname;
       const created = await FileManagerEntryModel.create({
@@ -654,13 +657,13 @@ router.post(
 router.get(
   "/api/v1/file-manager/files/:id/download",
   ...moduleGuards("file-manager", "file-manager.read"),
-  async (req, res, next) => {
+  async (req: AuthenticatedRequest, res, next) => {
     try {
       if (!isStrictObjectId(req.params.id)) {
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
 
-      const entry = await FileManagerEntryModel.findById(req.params.id).lean().exec() as unknown as FileManagerDoc | null;
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user!.id }).lean().exec() as unknown as FileManagerDoc | null;
       if (!entry || entry.kind !== "file") {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File not found");
       }

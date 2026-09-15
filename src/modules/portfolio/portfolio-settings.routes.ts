@@ -94,8 +94,29 @@ router.get("/api/v1/portfolio/settings", authenticateJwt, requireRole(ADMIN_ROLE
 
 router.put("/api/v1/portfolio/settings", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/settings", "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
-    const payload = settingsSchema.parse(req.body ?? {});
-    const updated = await PortfolioSettingsModel.findOneAndUpdate({}, { $set: payload }, { new: true, upsert: true, runValidators: true }).lean().exec();
+    // deepPartial, then $set only the keys actually sent.
+    //
+    // settingsSchema gives every top-level key a .default(), so parsing a body
+    // that omits `navbar` produced a fully-formed default navbar and $set it —
+    // silently wiping that section. The admin SDK types this endpoint as
+    // Partial<PortfolioSettings>, so sending one section is a supported call
+    // that used to destroy the other nine.
+    const payload = settingsSchema.deepPartial().parse(req.body ?? {});
+    const changes = Object.fromEntries(
+      Object.entries(payload).filter(([, value]) => value !== undefined)
+    );
+
+    if (Object.keys(changes).length === 0) {
+      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "No settings fields supplied");
+    }
+
+    const updated = await PortfolioSettingsModel.findOneAndUpdate(
+      {},
+      { $set: changes },
+      { new: true, upsert: true, runValidators: true }
+    )
+      .lean()
+      .exec();
     res.json(updated);
   } catch (error) {
     if (error instanceof z.ZodError) {

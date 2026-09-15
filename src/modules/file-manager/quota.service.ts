@@ -1,7 +1,10 @@
+import { env } from "../../config/env";
 import { FileManagerEntryModel } from "./file-manager.models";
 
 /** Default per-user storage quota: 500 MB */
-const DEFAULT_QUOTA_BYTES = 500 * 1024 * 1024;
+// Reads the same value GET /file-manager/quota reports, so the enforced limit
+// and the displayed limit cannot drift.
+const DEFAULT_QUOTA_BYTES = env.FILE_QUOTA_BYTES;
 
 export async function getUserStorageUsed(userId: string): Promise<number> {
   const result = await FileManagerEntryModel.aggregate([

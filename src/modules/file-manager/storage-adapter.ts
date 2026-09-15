@@ -1,3 +1,4 @@
+import type { S3Client } from "@aws-sdk/client-s3";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -14,8 +15,14 @@ import { supabaseConfig } from "../../core/storage/file-store";
  * via the STORAGE_BACKEND env var.
  */
 export interface StorageAdapter {
-  /** Store a local file at the given key. Returns the final storage key. */
-  store(key: string, localFilePath: string): Promise<string>;
+  /**
+   * Store the given bytes at the given key. Returns the final storage key.
+   *
+   * A Buffer rather than a temp-file path: the upload route uses multer memory
+   * storage because the serverless filesystem is read-only, so there is no file
+   * on disk for an adapter to read.
+   */
+  store(key: string, body: Buffer): Promise<string>;
 
   /** Get a readable stream for the given key. */
   retrieve(key: string): Promise<Readable>;
@@ -38,10 +45,10 @@ function ensureDir(dir: string): void {
 }
 
 export class LocalStorageAdapter implements StorageAdapter {
-  async store(key: string, localFilePath: string): Promise<string> {
+  async store(key: string, body: Buffer): Promise<string> {
     const dest = path.join(UPLOAD_DIR, key);
     ensureDir(path.dirname(dest));
-    fs.renameSync(localFilePath, dest);
+    fs.writeFileSync(dest, new Uint8Array(body));
     return key;
   }
 
@@ -69,7 +76,7 @@ export class LocalStorageAdapter implements StorageAdapter {
 
 export class S3StorageAdapter implements StorageAdapter {
   private bucket: string;
-  private clientPromise: Promise<any>;
+  private clientPromise: Promise<S3Client>;
 
   constructor() {
     this.bucket = env.S3_BUCKET ?? "";
@@ -98,17 +105,12 @@ export class S3StorageAdapter implements StorageAdapter {
     return new S3Client(config);
   }
 
-  async store(key: string, localFilePath: string): Promise<string> {
+  async store(key: string, body: Buffer): Promise<string> {
     const { PutObjectCommand } = await import("@aws-sdk/client-s3");
     const client = await this.clientPromise;
-    const body = fs.createReadStream(localFilePath);
     await client.send(
       new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: body })
     );
-    // Clean up local temp file
-    if (fs.existsSync(localFilePath)) {
-      fs.unlinkSync(localFilePath);
-    }
     logger.info("S3 upload complete", { bucket: this.bucket, key });
     return key;
   }
@@ -180,8 +182,7 @@ export class SupabaseStorageAdapter implements StorageAdapter {
     return `${this.url}/storage/v1/object/${this.bucket}/${this.prefix}/${key}`;
   }
 
-  async store(key: string, localFilePath: string): Promise<string> {
-    const body = await fs.promises.readFile(localFilePath);
+  async store(key: string, body: Buffer): Promise<string> {
     const response = await fetch(this.objectUrl(key), {
       method: "POST",
       headers: {
@@ -197,9 +198,6 @@ export class SupabaseStorageAdapter implements StorageAdapter {
       throw new Error(`Supabase upload failed (${response.status}): ${detail.slice(0, 300)}`);
     }
 
-    // Only remove the temp file once the bytes are safely stored, so a failed
-    // upload leaves something to retry from.
-    await fs.promises.unlink(localFilePath).catch(() => undefined);
     logger.info("Supabase upload complete", { bucket: this.bucket, key });
     return key;
   }

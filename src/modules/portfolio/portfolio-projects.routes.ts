@@ -94,9 +94,16 @@ const listByParamsQuerySchema = z.object({
   category: z.string().max(100).optional(),
   year: z.string().max(20).optional(),
   client: z.string().max(300).optional(),
+  // The client sends `?stack=React,Node` (lib/api.ts joins the array), so a
+  // lone string has to be SPLIT, not wrapped. Wrapping produced
+  // { $in: ["React,Node"] }, which matches no document — every multi-value
+  // stack filter silently returned zero results.
   stack: z.union([z.string(), z.array(z.string())]).optional().transform((v) => {
     if (!v) return undefined;
-    return Array.isArray(v) ? v : [v];
+    const values = (Array.isArray(v) ? v : v.split(","))
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return values.length > 0 ? values : undefined;
   }),
   search: z.string().max(200).optional()
 });
