@@ -42,6 +42,7 @@ import { portfolioTeamRoutes } from "./modules/portfolio/portfolio-team.routes";
 import { portfolioSettingsRoutes } from "./modules/portfolio/portfolio-settings.routes";
 import { portfolioContactsRoutes } from "./modules/portfolio/portfolio-contacts.routes";
 import { portfolioMastersRoutes } from "./modules/portfolio/portfolio-masters.routes";
+import { seoRoutes } from "./modules/seo/seo-meta.routes";
 
 export async function createApp() {
   const app = express();
@@ -130,6 +131,7 @@ export async function createApp() {
   app.use(portfolioSettingsRoutes);
   app.use(portfolioContactsRoutes);
   app.use(portfolioMastersRoutes);
+  app.use(seoRoutes);
 
   registerModuleRoutes(app, moduleManifests);
 

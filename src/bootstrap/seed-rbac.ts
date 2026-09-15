@@ -72,6 +72,15 @@ const MENU_TREE: MenuSeed[] = [
     ]
   },
   {
+    menuUrl: "#website",
+    menuName: "Website",
+    icon: "FileEdit",
+    sequence: 20,
+    children: [
+      { menuUrl: "/website/seo-manager", menuName: "SEO Manager", icon: "Search", sequence: 1 }
+    ]
+  },
+  {
     menuUrl: "#modules",
     menuName: "Modules",
     icon: "Layers",

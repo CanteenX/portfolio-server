@@ -30,7 +30,9 @@ const IMAGE_UPLOAD_MENUS = [
   "/portfolio/projects",
   "/portfolio/team",
   "/portfolio/settings",
-  "/portfolio/masters/tech-stacks"
+  "/portfolio/masters/tech-stacks",
+  // OG share images are uploaded from the SEO Manager through this same endpoint.
+  "/website/seo-manager"
 ];
 
 const router = Router();
