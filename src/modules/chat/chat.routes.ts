@@ -7,7 +7,6 @@ import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { AppError } from "../../core/errors/app-error";
 import { moduleGuards } from "../../core/http/module-guards";
 import { ChatConversationModel, ChatMessageModel } from "./chat.models";
-import { addClient, removeClient, broadcastToConversation } from "./chat-events";
 
 const router = Router();
 
@@ -285,7 +284,6 @@ router.post(
         { $inc: { messageCount: 1 }, $set: { lastMessageAt: new Date() } }
       ).exec();
 
-      broadcastToConversation(req.params.id, "message", message.toObject());
 
       res.status(201).json(message.toObject());
     } catch (error) {
@@ -318,7 +316,6 @@ router.patch(
       message.editedAt = new Date();
       await message.save();
 
-      broadcastToConversation(String(message.conversationId), "message_edited", message.toObject());
 
       res.json(message.toObject());
     } catch (error) {
@@ -356,7 +353,6 @@ router.delete(
       const deletedId = String(message._id);
       await ChatMessageModel.deleteOne({ _id: message._id }).exec();
 
-      broadcastToConversation(conversationIdStr, "message_deleted", { _id: deletedId });
 
       res.status(204).send();
     } catch (error) {
@@ -392,52 +388,5 @@ router.get(
 );
 
 // ── SSE stream (real-time messages) ─────────────────────────────
-
-// SSE auth: native EventSource can't set headers, so accept ?token= query param
-router.get(
-  "/api/v1/chat/conversations/:id/stream",
-  (req, _res, next) => {
-    const token = req.query.token;
-    if (typeof token === "string" && token && !req.headers.authorization) {
-      req.headers.authorization = `Bearer ${token}`;
-    }
-    next();
-  },
-  ...moduleGuards("chat", "chat.read"),
-  async (req: AuthenticatedRequest, res, next) => {
-    try {
-      ensureValidObjectId(req.params.id);
-
-      const conversation = await ChatConversationModel.findById(req.params.id).lean().exec() as
-        | ({ participantUserIds: string[] } & Record<string, unknown>)
-        | null;
-      if (!conversation) {
-        throw new AppError(404, ERROR_CODES.NOT_FOUND, "Conversation not found");
-      }
-      ensureParticipantOrSuperAdmin(req, conversation.participantUserIds);
-
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-      res.write("event: connected\ndata: {}\n\n");
-
-      addClient({ res, userId: req.user!.id, conversationId: req.params.id });
-
-      const heartbeat = setInterval(() => {
-        res.write(": heartbeat\n\n");
-      }, 30_000);
-
-      req.on("close", () => {
-        clearInterval(heartbeat);
-        removeClient(res);
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
 
 export const chatRoutes = router;

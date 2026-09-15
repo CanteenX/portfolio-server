@@ -49,6 +49,18 @@ export async function createApp() {
   // Uploads are the one feature that cannot work on a read-only filesystem, so
   // say so loudly at cold start rather than letting the first admin upload be
   // the thing that discovers it.
+  if (IS_SERVERLESS) {
+    // Socket.IO is wired only in src/main.ts, which is the long-running entry
+    // point and is NOT what Vercel builds (scripts/build-vercel.mjs bundles
+    // api-src/entry.ts). Every emit site guards with `if (io)`, so real-time
+    // push degrades to a silent no-op here rather than an error. Say so, so it
+    // is not diagnosed as a client bug.
+    logger.warn(
+      "Socket.IO is not available on the serverless entry point — real-time push " +
+        "(WhatsApp inbox) is inert. Clients must poll."
+    );
+  }
+
   if (IS_SERVERLESS && !isSupabaseConfigured()) {
     logger.warn(
       "No object storage configured — image uploads will fail. Set SUPABASE_URL " +

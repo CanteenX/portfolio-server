@@ -247,24 +247,50 @@ async function backfillAdminEmployees(menuIds: mongoose.Types.ObjectId[]): Promi
 
   let created = 0;
   for (const admin of admins) {
-    const existing = await EmployeeModel.findOne({ userId: admin._id }).select("_id").lean().exec();
-    if (existing) continue;
+    // Match on emailOffice as well as userId: some databases carry a legacy
+    // UNIQUE index on emailOffice, so an employee row created by another route
+    // (or an earlier schema) collides on insert even though no row exists for
+    // this userId.
+    const existing = await EmployeeModel.findOne({
+      $or: [{ userId: admin._id }, { emailOffice: admin.email }]
+    })
+      .select("_id roleId")
+      .lean()
+      .exec();
 
-    await EmployeeModel.create({
-      clientCode: env.CLIENT_CODE,
-      userId: admin._id,
-      employeeName: admin.email.split("@")[0] ?? "Administrator",
-      emailOffice: admin.email,
-      department: "",
-      contact: "",
-      roleId: role._id,
-      parentEmployeeId: null,
-      ancestorIds: [],
-      isActive: true,
-      createdBy: null,
-      updatedBy: "seed"
-    });
-    created += 1;
+    if (existing) {
+      // Adopt an orphan: a row with no role grants nothing, which is the
+      // lockout this backfill exists to prevent.
+      const typed = existing as { _id: mongoose.Types.ObjectId; roleId?: mongoose.Types.ObjectId | null };
+      if (!typed.roleId) {
+        await EmployeeModel.updateOne({ _id: typed._id }, { $set: { roleId: role._id } }).exec();
+      }
+      continue;
+    }
+
+    try {
+      await EmployeeModel.create({
+        clientCode: env.CLIENT_CODE,
+        userId: admin._id,
+        employeeName: admin.email.split("@")[0] ?? "Administrator",
+        emailOffice: admin.email,
+        department: "",
+        contact: "",
+        roleId: role._id,
+        parentEmployeeId: null,
+        ancestorIds: [],
+        isActive: true,
+        createdBy: null,
+        updatedBy: "seed"
+      });
+      created += 1;
+    } catch (error) {
+      // A duplicate here means a concurrent boot won the race — two serverless
+      // instances cold-starting together. Nothing to do, and certainly not
+      // worth failing the boot over.
+      if ((error as { code?: number }).code === 11000) continue;
+      throw error;
+    }
   }
 
   return created;

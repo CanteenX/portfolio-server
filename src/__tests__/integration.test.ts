@@ -554,11 +554,10 @@ describe("integration: chat IDOR security", () => {
     assert.equal(res.status, 403);
   });
 
-  it("admin (non-participant) cannot access SSE stream", async () => {
-    const res = await request(app)
-      .get(`/api/v1/chat/conversations/${conversationId}/stream?token=${adminToken()}`);
-    assert.equal(res.status, 403);
-  });
+  // The SSE stream endpoint was removed: an in-process client registry cannot
+  // serve a fleet of serverless instances, and the platform killed the request
+  // before its first heartbeat. Its non-participant check is covered by the
+  // messages test above, which is what the admin polls now.
 });
 
 // ── Idempotency ────────────────────────────────────────────────

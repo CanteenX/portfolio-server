@@ -166,13 +166,19 @@ const validateSignature = (rawBody: Buffer, signature: string | undefined): bool
  * - We validate the signature on the raw buffer first
  * - Then parse JSON manually after validation
  *
+ * Processing completes BEFORE the 200 is sent.
+ *
+ * This used to respond first and process afterwards, which cannot work on a
+ * serverless function: nothing keeps the invocation alive once the response
+ * completes, so the execution environment can be frozen mid-write. Meta sees a
+ * 200 either way, which makes a lost status update, inbox message or opt-out
+ * indistinguishable from success. The work here is a handful of Mongo writes,
+ * comfortably inside Meta 20s timeout.
+ *
  * @param req - Express request with raw webhook payload (Buffer)
- * @param res - Express response (return 200 immediately)
+ * @param res - Express response
  */
 export const handleStatusUpdate = async (req: Request, res: Response): Promise<void> => {
-  // IMPORTANT: Respond immediately before processing (Meta 20s timeout)
-  res.status(200).send("OK");
-
   // Get raw body buffer (from express.raw() middleware)
   const rawBody = req.body as Buffer;
   const signature = req.headers["x-hub-signature-256"] as string | undefined;
@@ -180,6 +186,7 @@ export const handleStatusUpdate = async (req: Request, res: Response): Promise<v
   // Validate HMAC signature using raw body
   if (!validateSignature(rawBody, signature)) {
     logger.error("[WhatsApp Webhook] Invalid signature, ignoring payload");
+    res.status(200).send("OK");
     return;
   }
 
@@ -189,6 +196,7 @@ export const handleStatusUpdate = async (req: Request, res: Response): Promise<v
     body = JSON.parse(rawBody.toString("utf8"));
   } catch (err) {
     logger.error("[WhatsApp Webhook] Failed to parse JSON payload", { error: err });
+    res.status(200).send("OK");
     return;
   }
 
@@ -227,6 +235,11 @@ export const handleStatusUpdate = async (req: Request, res: Response): Promise<v
   } catch (err) {
     logger.error("[WhatsApp Webhook] Processing error", { error: err });
   }
+
+  // Acknowledge only after the work is durable. A 200 sent earlier would let
+  // the function freeze before these writes landed, and Meta would never retry
+  // because it already saw success.
+  res.status(200).send("OK");
 };
 
 // ═══════════════════════════════════════════════════════════

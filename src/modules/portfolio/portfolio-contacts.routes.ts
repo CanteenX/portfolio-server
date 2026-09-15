@@ -9,6 +9,7 @@ import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
 import { requireRole } from "../../core/rbac/role.middleware";
 import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+import { sharedRateLimitStore } from "../../core/http/mongo-rate-limit-store";
 
 /** Both roles may reach these routes; what they may DO is decided per menu. */
 const ADMIN_ROLES: RoleKey[] = ["super_admin", "admin"];
@@ -16,7 +17,15 @@ import { PortfolioContactModel } from "./portfolio-contacts.models";
 
 const router = Router();
 
-const submitRateLimiter = rateLimit({ windowMs: 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false });
+// Shared store: this is the one unauthenticated write endpoint on the site, and
+// a per-instance counter let the 5/min cap be exceeded by fanning out requests.
+const submitRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: sharedRateLimitStore("contact")
+});
 
 function ensureValidObjectId(id: string): void {
   if (!mongoose.Types.ObjectId.isValid(id)) {

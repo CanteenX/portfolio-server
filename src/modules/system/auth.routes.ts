@@ -9,6 +9,7 @@ import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { requireRole } from "../../core/rbac/role.middleware";
+import { sharedRateLimitStore } from "../../core/http/mongo-rate-limit-store";
 import { buildRbacSnapshot } from "../../core/rbac/rbac-permission.middleware";
 
 
@@ -19,6 +20,9 @@ const loginSchema = z.object({
 });
 
 const loginRateLimiter = rateLimit({
+  // Shared store on serverless: the in-memory default counts per instance, so
+  // brute-force protection here was bypassable with concurrent requests.
+  store: sharedRateLimitStore("login"),
   windowMs: 15 * 60 * 1000,
   max: 30,
   standardHeaders: true,
