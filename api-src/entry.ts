@@ -5,6 +5,7 @@ import { createApp } from "../src/app";
 import { connectDatabase } from "../src/config/db";
 import { seedMenusIfEmpty } from "../src/modules/menu/menu.seed";
 import { seedRbacBaseline } from "../src/bootstrap/seed-rbac";
+import { seedSeoMeta } from "../src/modules/seo/seo.seed";
 import { logger } from "../src/core/logging/logger";
 
 type CachedState = {
@@ -35,6 +36,11 @@ async function getApp(): Promise<Express> {
         await seedRbacBaseline();
       } catch (err) {
         logger.error("RBAC seed failed on cold start — guarded routes will deny", { error: err });
+      }
+      try {
+        await seedSeoMeta();
+      } catch (err) {
+        logger.warn("SEO seed skipped on cold start", { error: err });
       }
       return await createApp();
     })().catch((err) => {

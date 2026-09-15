@@ -4,6 +4,7 @@ import { FeatureConfigModel } from "../core/feature-flags/feature-config.model";
 import { logger } from "../core/logging/logger";
 import { seedModuleData } from "./seed-data";
 import { seedRbacBaseline } from "./seed-rbac";
+import { seedSeoMeta } from "../modules/seo/seo.seed";
 
 export async function seedBaseline(): Promise<void> {
   const existingConfig = await FeatureConfigModel.findOne({ clientCode: env.CLIENT_CODE }).exec();
@@ -29,5 +30,13 @@ export async function seedBaseline(): Promise<void> {
     await seedRbacBaseline();
   } catch (error) {
     logger.error("RBAC seed failed — guarded routes will deny non-super-admins", { error });
+  }
+
+  // Non-fatal for the same reason: a missing SEO row means the page uses its
+  // built-in title, which is a degraded state, not a broken one.
+  try {
+    await seedSeoMeta();
+  } catch (error) {
+    logger.error("SEO seed failed — pages fall back to their built-in titles", { error });
   }
 }
