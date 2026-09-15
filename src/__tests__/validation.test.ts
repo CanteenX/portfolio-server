@@ -190,3 +190,43 @@ describe("invalid object id handling", () => {
     });
   }
 });
+
+/**
+ * Contact form validation.
+ *
+ * Every case here is answered BEFORE the handler touches Mongo — zod rejects
+ * first, and the honeypot short-circuits — so these belong in the unit suite
+ * and need no database.
+ */
+describe("public contact form validation", () => {
+  const url = "/api/v1/public/portfolio/contact";
+  const valid = { name: "Test Person", email: "test@example.com", message: "Hello there" };
+
+  it("rejects a missing name", async () => {
+    const res = await request(app).post(url).send({ email: valid.email, message: valid.message });
+    assert.equal(res.status, 400);
+  });
+
+  it("rejects a malformed email", async () => {
+    const res = await request(app).post(url).send({ ...valid, email: "not-an-email" });
+    assert.equal(res.status, 400);
+  });
+
+  it("rejects an empty message", async () => {
+    const res = await request(app).post(url).send({ ...valid, message: "" });
+    assert.equal(res.status, 400);
+  });
+
+  it("rejects a message beyond the 5000 character cap", async () => {
+    const res = await request(app).post(url).send({ ...valid, message: "x".repeat(5001) });
+    assert.equal(res.status, 400);
+  });
+
+  it("accepts a filled honeypot without storing anything, and does not say so", async () => {
+    const res = await request(app).post(url).send({ ...valid, website: "http://spam.example" });
+    // Indistinguishable from success on purpose: telling a bot it was caught
+    // only teaches whoever wrote it to stop filling the field.
+    assert.equal(res.status, 201);
+    assert.equal(res.body.id, null);
+  });
+});

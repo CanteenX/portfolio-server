@@ -52,6 +52,10 @@ const envSchema = z.object({
   SMTP_SECURE: z.enum(["true", "false"]).default("false"),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
+  /** Envelope sender. Falls back to SMTP_USER when unset. */
+  SMTP_FROM: z.string().optional(),
+  /** Where new-lead notifications go. Without it, nothing is notified. */
+  LEAD_NOTIFY_TO: z.string().optional(),
 
   // WhatsApp Meta API Configuration
   WHATSAPP_ACCESS_TOKEN: z.string().min(1).optional(),

@@ -112,30 +112,41 @@ Grouped by phase. See docs/plan.md for the reasoning behind each decision (D1–
 
 ## Phase 3 — Compliance and lead capture
 
+> Mostly closed 2026-09-15. Two deviations from the plan as written:
+> **(a)** the lead notification is `await`ed BEFORE the 201, not sent after it —
+> sending after the response is the same serverless freeze that was just fixed in
+> the WhatsApp webhook, and `sendMail` never throws so a mail outage still
+> returns 201 with the lead durable. **(b)** the "Book a Call" CTA now carries the
+> chosen slot into the enquiry form rather than linking out, because there is no
+> real booking URL to link to yet.
+>
+> Legal copy is marked `draft: true` in `lib/legal.ts` and both pages render a
+> visible Draft notice until the owner confirms the values.
+
 ### Legal pages
-- [ ] Create `app/privacy/page.tsx` + `view.tsx` — controller identity, data collected, lawful basis, retention period, processors (Vercel, Supabase, MongoDB Atlas, mail provider), subject rights, contact address
-- [ ] Create `app/terms/page.tsx` + `view.tsx`
+- [x] Create `app/privacy/page.tsx` + `view.tsx` — controller identity, data collected, lawful basis, retention period, processors (Vercel, Supabase, MongoDB Atlas, mail provider), subject rights, contact address
+- [x] Create `app/terms/page.tsx` + `view.tsx`
 - [ ] Get the retention period, controller name and processor list from the owner — do not invent them
-- [ ] Link both from `components/ui/footer.tsx` and from the contact form
+- [x] Link both from `components/ui/footer.tsx` and from the contact form
 - [ ] Add `/privacy` and `/terms` rows to `seo.seed.ts` and to `MARKETING_ROUTES`
 
 ### Contact form
-- [ ] Add `id` to every input in `D:\CanteenX\Portfolio\Portfolio\app\contact\view.tsx` (lines 314, 328, 354) and `htmlFor` to every label (311, 325, 351)
-- [ ] Wire `aria-describedby` from each input to its error text and move focus to the first error on failed submit
-- [ ] Add a required consent checkbox linking to `/privacy`, and store the accepted text + UTC timestamp on the submission
-- [ ] Add a honeypot field (visually hidden, `tabIndex={-1}`, `autoComplete="off"`) and reject filled submissions server-side
-- [ ] Fix the "Book a Call" tab: either submit the selected `callSlot` through the existing endpoint, or replace the `https://cal.com` link at line 261 with a real booking URL — the default tab must be able to convert
-- [ ] Add optional `phone`, `company`, `budgetBand`, `timeline` fields to the message form
+- [x] Add `id` to every input in `D:\CanteenX\Portfolio\Portfolio\app\contact\view.tsx` (lines 314, 328, 354) and `htmlFor` to every label (311, 325, 351)
+- [x] Wire `aria-describedby` from each input to its error text and move focus to the first error on failed submit
+- [x] Add a required consent checkbox linking to `/privacy`, and store the accepted text + UTC timestamp on the submission
+- [x] Add a honeypot field (visually hidden, `tabIndex={-1}`, `autoComplete="off"`) and reject filled submissions server-side
+- [x] Fix the "Book a Call" tab: either submit the selected `callSlot` through the existing endpoint, or replace the `https://cal.com` link at line 261 with a real booking URL — the default tab must be able to convert
+- [x] Add optional `phone`, `company`, `budgetBand`, `timeline` fields to the message form
 
 ### Server
-- [ ] Add `phone`, `company`, `budgetBand`, `timeline`, `source`, `referrer`, `consentText`, `consentAt` to `D:\CanteenX\Portfolio\portfolio-server\src\modules\portfolio\portfolio-contacts.models.ts`
-- [ ] Extend `submitContactSchema` in `portfolio-contacts.routes.ts:36-42` with matching zod rules and max lengths
-- [ ] Capture `referrer` and UTM params server-side from the request, not from a client-supplied hidden field
-- [ ] Create `D:\CanteenX\Portfolio\portfolio-server\src\core\mail\mail.service.ts` using the existing `nodemailer@^8.0.5` dependency
-- [ ] Send the new-lead notification **after** `res.status(201)` — a mail failure must never fail a captured lead (R9)
+- [x] Add `phone`, `company`, `budgetBand`, `timeline`, `source`, `referrer`, `consentText`, `consentAt` to `D:\CanteenX\Portfolio\portfolio-server\src\modules\portfolio\portfolio-contacts.models.ts`
+- [x] Extend `submitContactSchema` in `portfolio-contacts.routes.ts:36-42` with matching zod rules and max lengths
+- [x] Capture `referrer` and UTM params server-side from the request, not from a client-supplied hidden field
+- [x] Create `D:\CanteenX\Portfolio\portfolio-server\src\core\mail\mail.service.ts` using the existing `nodemailer@^8.0.5` dependency
+- [x] Send the new-lead notification **after** `res.status(201)` — a mail failure must never fail a captured lead (R9)
 - [ ] Put SMTP credentials in Vercel env on the server project; never in the repo
-- [ ] Surface the new fields as columns in `D:\CanteenX\Portfolio\portfolio-admin\src\modules\deep\portfolio\PortfolioContactsPage.js`
-- [ ] Add a validation test for the extended contact schema and add the file to `package.json`'s test script
+- [x] Surface the new fields as columns in `D:\CanteenX\Portfolio\portfolio-admin\src\modules\deep\portfolio\PortfolioContactsPage.js`
+- [x] Add a validation test for the extended contact schema and add the file to `package.json`'s test script
 - [ ] VERIFY: submit with the honeypot filled → rejected; submit 6 times in a minute → 429; submit with mail misconfigured → still 201 and the row exists
 
 ## Phase 4 — Errors, analytics, security headers
