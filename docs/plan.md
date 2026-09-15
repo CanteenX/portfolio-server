@@ -423,3 +423,186 @@ Stated so nobody re-proposes them.
 
 ---
 ---
+
+# Part II — Security and CMS completeness
+
+Added 2026-09-16. Part I (sections 1–7) covers the SEO and marketing-gap work; phases 0–4 of it are shipped. Part II covers two tracks Part I never addressed: the authorization system, and the gap between "has a CMS" and "is editable".
+
+The two tracks are independent. Track A is a live security defect and should start first. Track B is larger and mostly additive.
+
+---
+
+## 8. Track A — RBAC remediation
+
+### 8.1 What is actually wrong
+
+Three parallel authorization systems exist and do not talk to each other.
+
+| System | Enforced? | Covers |
+|---|---|---|
+| Menu-driven RBAC (`requireRbacPermission`) | **Yes** | ~43 routes — portfolio/*, seo, rbac |
+| Static string permissions (`requirePermission`) | **No — rubber stamp** | 158 route registrations across 21 files |
+| CustomRole (`session.currentRolePermissions`) | **No — nothing at all** | UI gating only |
+
+Two confirmed criticals, both verified by reading the code rather than inferred:
+
+**A1 — privilege escalation, one HTTP call, any admin.**
+In `rbac.routes.ts`, `visibleIds` always contains the caller's own employee id, so an admin may `PUT` their own record. The role-assignment guard reads `if (role?.createdBy && !visibleRoleCreators.includes(role.createdBy))`, and super-admin-authored roles have `createdBy: null` (set only inside `if (!isSuperAdmin)`), so the condition short-circuits and **the check is skipped rather than denying**. Any admin can assign themselves the seeded full-grant `Administrator` role. The same bug exists in `POST /employees`.
+
+Worse: `/api/v1/rbac/*` is guarded by `requireRole(["super_admin","admin"])` only, so *every* admin can reach it regardless of grants. And `POST /employees` creates a `User` with an attacker-chosen password, making "create a subordinate, then log in as them" a real vector rather than a theoretical one.
+
+**A2 — half the application bypasses RBAC entirely.**
+`core/rbac/permissions.ts` builds `superAdminPermissions` and `adminPermissions` from the *same* `buildAdminPermissions()` call. Every admin therefore holds full CRUD on calendar, chat, mailbox, ecommerce, projects, tasks, crm, invoices, support-tickets, file-manager, todo, job, api-management and whatsapp — and the custom-role restrictions the UI enforces are decorative, bypassable with curl.
+
+Three further findings that shape the work:
+
+- **A3** — every RBAC screen asks for uppercase `"CREATE"`/`"UPDATE"`/`"DELETE"` against a server vocabulary of `["read","write","edit","delete","print","mail"]`. The strings can never match, so for any non-super-admin **every button on all six RBAC screens is permanently hidden**. Fails closed, so not a hole — but delegated RBAC administration does not currently work at all.
+- **A4** — `whatsapp` has no `MenuMaster` row but registers 39 module guards. Enforcing RBAC without adding it first guarantees a 403 outage.
+- **A5** — `backfillAdminEmployees` runs on every serverless cold start and promotes any zero-grant employee to full `Administrator`. Deactivating an admin does not clear `roleId`, so deactivation can be silently undone on the next boot.
+
+### 8.2 The design decision that makes this safe
+
+The instinct is to tighten the authorship check. That is wrong, and it is the change that would lock you out: it makes every super-admin-authored role — including `Administrator` — unassignable by your admins, breaking onboarding.
+
+**Replace authorship with grant-containment.** An admin may assign role `R` to employee `E` iff:
+
+```
+(a) E is not the actor          — no self-assignment, ever
+(b) E is a descendant of actor  — hierarchy, already used by PUT /status
+(c) grants(R) ⊆ grants(actor)   — the actor cannot exceed their own ceiling
+```
+
+Authorship stops being consulted. Because your top admin currently holds `Administrator`, `grants(Administrator) ⊆ grants(Administrator)` is true — so **every assignment that works today keeps working.** Only two things become impossible, and both are the attack: assigning to yourself, and assigning above your own ceiling. `validateStrictSubset` already implements the set logic for role create/edit; this reuses it on the assignment path.
+
+### 8.3 Phases
+
+Each is independently shippable and revertable. **A-1 ships first** — it is the only finding exploitable today with a single call and no prerequisites.
+
+| # | Phase | Complexity | Est. | Lockout risk |
+|---|---|---|---|---|
+| A-0 | Module→menu map, shadow-mode evaluator, whatsapp menu, coverage report | Low | 0.5 d | **None** — logs only |
+| A-1 | **Escalation fix (A1)** — grant-containment + self-ban + audit log | Medium | 1 d | Low–Med |
+| A-2 | RBAC API self-guards + fix uppercase action codes (A3) | Medium | 1 d | Medium |
+| A-3 | Grant backfill migration, dry-run reviewed by a human | Medium | 1 d | Low |
+| A-4 | **Enforce RBAC on the 14 modules (A2)** behind a kill switch | High | 2–3 d | **High** |
+| A-5 | Test hardening — real RBAC fixtures | Medium | 1.5 d | None |
+| A-6 | Retire the two dead permission systems | Medium | 1.5 d | Low–Med |
+| A-7 | Seed safety (A5) — `accessLocked`, audit trail | Low | 0.5 d | Low |
+| A-8 | Decide and document super-admin-only surfaces | Low–Med | 1 d | Low–Med |
+
+**≈ 10–11 working days, plus a mandatory 7–14 day soak between A-0 and A-4.**
+
+Hard ordering: `A-0 → A-3 → A-4` (enforcing without the coverage inventory is the lockout scenario). `A-1 → A-2` (A-2 adds a grant check the full-grant attacker already passes; doing it first delays the real fix for no gain). A-2's server and client changes must ship together, or delegates get screens with no buttons.
+
+### 8.4 Why A-4 is the dangerous one
+
+It flips 158 route registrations from a rubber stamp to a database lookup. The controls that make it survivable:
+
+- `RBAC_MODULE_MODE` env var with `off | shadow | enforce`. Rollback is a Vercel env change, not a git revert.
+- Shadow mode must log **zero** denies for ≥7 days before flipping.
+- `requireFeatureEnabled` must stay *ahead* of the RBAC check — an existing integration test asserts `FEATURE_DISABLED`, and reordering silently changes the error users see.
+- A compile-time exhaustiveness guard on the module→menu map, so the next `MODULE_KEYS` addition cannot repeat the whatsapp gap.
+- Every server change ends with `pnpm build:vercel` — `api/[[...slug]].js` is a committed bundle and is what production actually runs.
+
+### 8.5 Decisions needed before A-1 starts
+
+1. **May an admin assign a super-admin-authored role (incl. `Administrator`) to a subordinate?** *Recommend yes*, gated purely by grant-containment. The stricter alternative stops your admin onboarding anyone — the exact lockout to avoid.
+2. **May an admin edit their own employee record at all?** *Recommend: yes for name/department/contact, no for `roleId`.* Note `emailOffice` cascades to the login email — exclude it too if that is unacceptable.
+3. **Give `Administrator` an `isSystemRole` flag?** *Recommend yes* — nothing currently stops a super_admin gutting the role every admin depends on.
+4. **Which super-admin-only routes should become delegable?** *Recommend delegable:* branding, menu management, payments config, feature-toggle read. *Recommend staying super-admin:* user CRUD, password reset, feature-config write, system settings, audit log.
+5. **Grant-backfill aggressiveness (A-3).** *Recommend: grant all 14 module menus to every in-use role, then narrow deliberately two weeks later.* Tighter options risk denying a monthly-use screen that never appeared in the observation window.
+6. **`export` action.** RBAC has `print`/`mail`, module guards have `export`. *Recommend mapping `export → print`* — no migration, no new column.
+7. **Should `/api/v1/rbac/*` require menu grants?** *Recommend yes*, but this is the change most likely to surprise a teammate.
+8. **whatsapp** — add `/whatsapp` to the menu tree (*recommended*, free), or accept it becomes super-admin-only at A-4.
+9. **CustomRole — retire or wire up?** *Recommend retire.* Wiring it up is actively dangerous: its slug-based strings do not match `MODULE_KEYS`, so enforcing it would 403 every module for every custom-role holder. **Confirm first** — retiring removes the `/settings/custom-roles` screen.
+10. **A-4 rollout window.** Low-traffic, with a super_admin session held open as break-glass.
+
+---
+
+## 9. Track B — making the frontend genuinely CMS-managed
+
+### 9.1 Where it actually stands
+
+**~30% of the public site is CMS-driven.** Project and team *listings* are a real CMS; everything a visitor reads as narrative is a code deploy.
+
+Five facts that change how this should be approached:
+
+1. **The Hero tab is a decoy.** `hero.tagline`, `hero.description`, both CTA labels and `techMarquee` have admin inputs and database columns and **no renderer** — they appear only in the type declaration. An editor rewrites the homepage headline, saves, and nothing happens. This is the failure mode to design against, not merely a bug to fix.
+2. **The homepage does not server-render at all.** `app/page.tsx` is `"use client"` with no server shell and no `revalidate`. The most valuable page on the site puts zero CMS content into first paint.
+3. **Three mutually inconsistent hardcoded service lists exist** — `/services`, the homepage carousel, and the contact dropdown. Six of eight titles differ. The exact-title-match lookup on `/services` is therefore **already broken today** for anyone typing the carousel's wording.
+4. **The three bespoke case studies are structurally identical to the generic renderer already.** The only real differences are section headings. Migration is a heading-override problem, not a rewrite — which makes the expensive-looking phase much cheaper than it appears.
+5. **Fallback data is placeholder fiction.** Six invented team members with `@forge.collective` emails, four invented projects including "Confidential — EU Fintech". Real data renders today, but **an API outage shows a fake team and fake clients** rather than degrading honestly.
+
+### 9.2 The contract every renderer must follow
+
+```
+per-row override  →  settings sub-document  →  shipped honest constant
+```
+
+Applied **per field, never per object**, so a half-filled override never blanks a heading. This extends the existing `settings?.x || FALLBACK` pattern by one level.
+
+Two rules follow from the Hero-tab failure, and they matter more than the schema:
+
+- **No input ships without a renderer.** An editable field that does nothing is worse than no field — it teaches editors the CMS is broken.
+- **Every new image-uploading screen must be added to `IMAGE_UPLOAD_MENUS`** in `portfolio-masters.routes.ts`, or it gets working CRUD and a 403 on every upload.
+
+### 9.3 Phases, ordered by business value
+
+| # | Phase | Complexity | Est. | Ships value alone? |
+|---|---|---|---|---|
+| B-1 | **Honest fallbacks + make the Hero tab real** + team-create 400 fix + settings provider | M | 4–6 d | Yes |
+| B-2 | Services become a first-class collection (resolves the three-list conflict) | L | 6–9 d | Yes |
+| B-3 | Social proof — testimonials, client logos, proof metrics (G7, G8) | M | 4–6 d | Yes |
+| B-4 | The three bespoke case studies into the CMS | L | 7–10 d | Yes |
+| B-5 | Page furniture — headings, ContactCTA, contact-form options, error pages | M | 5–7 d | Yes |
+| B-6 | Legal pages from the CMS | M | 3–5 d | Yes |
+| B-7a | FAQ | S | 2–3 d | Yes |
+| B-7b | Pricing signal (G12) | S/M | 2–4 d | Yes |
+| B-7c | Blog / Insights (G13) | L | 8–12 d | Yes |
+| B-8 | On-demand revalidation, rich team fields, preview, cleanup | M | 5–7 d | Yes |
+
+**≈ 46–69 dev-days.** B-1 to B-4 (21–31 days) carry essentially all the sales-facing value.
+
+**Pull B-8.1 (on-demand revalidation) forward to straight after B-1** if editors will be using the CMS during B-2 to B-4. Everything sits behind `revalidate = 3600` and there is no `revalidatePath` anywhere, so without it every phase ships with an editor experience of "I saved it and nothing happened".
+
+### 9.4 Decisions needed
+
+1. **Migrate the three bespoke case studies, or keep them bespoke?** *Recommend migrate* — one renderer, three editable rows, and the sitemap stops lying. **This is the riskiest change in the plan**: ~1,380 lines transcribed against your best-ranking URLs. Mitigated by identical slugs and before/after visual diffs.
+2. **Which service names are canonical?** "App Building" or "App Development"? "Designing" or "UI/UX Design"? Is "Maintenance" a service? Is "AI Solutions"? Collapsing to one list changes visible copy on one surface or the other.
+3. **What does `/team` show once the six fictional people are deleted?** *Recommend publishing real members before B-1 merges.* What must not happen is keeping the fake people.
+4. **Are there real client logos and testimonials, with written permission?** B-3 builds the machinery regardless, but renders nothing when empty.
+5. **Commit to a blog?** B-7c is the largest single item and its value is entirely in content written continuously. An abandoned blog is an active negative signal. Only greenlight with a named owner and a cadence.
+6. **Who may edit legal copy?** *Recommend a `/portfolio/legal` menu restricted to super_admin.* A wrong retention promise is a dated, documented commitment.
+7. **Is `nventra.umaeng.co.in` permanent?** The apex does not resolve. If it is being fixed, do it before B-7c to avoid migrating article URLs twice.
+8. **Publish pricing at all?** Changes inbound lead quality in both directions.
+9. **Acceptable publish latency?** Drives whether B-8.1 moves forward.
+
+### 9.5 What "100% CMS" should not mean
+
+Every heading moved into the database becomes a thing that can be blanked, mistyped or half-filled. The per-field fallback contract in 9.2 is what keeps that from being a regression, and it is not optional. A site where an editor can accidentally ship an empty `<h1>` is worse than one where the `<h1>` needs a deploy.
+
+There are currently **zero portfolio tests** on the server and no test runner at all in the website repo. Every phase in Track B adds a surface that can silently render nothing. Test coverage is a prerequisite for this track, not a follow-up.
+
+---
+
+## 10. Recommended overall sequence
+
+```
+A-0 + A-1        ← start here, this week. A-1 is a live hole.
+   │
+   ├─ A-2 ────────────────────────┐
+   │                              │
+   ├─ A-3 ─→ A-4 ─→ A-5 ─→ A-6    │  (A-4 needs the 7–14 day soak)
+   │                              │
+   └─ A-7, A-8 (any time) ────────┘
+
+B-1 ─→ B-8.1 ─→ B-2 ─→ B-3 ─→ B-4 ─→ B-5 ─→ B-6 ─→ B-7a/b/c
+```
+
+Track B can run in parallel with Track A's soak periods — they touch different
+modules, and A-4's blast radius is the 14 legacy modules, none of which Track B
+edits.
+
+**If forced to choose one thing:** A-1. It is one day's work against a hole that
+any admin account can exploit with a single HTTP call, and everything else in
+both tracks is either additive or reversible.
