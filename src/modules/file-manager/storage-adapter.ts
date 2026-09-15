@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import { env } from "../../config/env";
 import { logger } from "../../core/logging/logger";
+import { supabaseConfig } from "../../core/storage/file-store";
 
 /**
  * Storage adapter interface.
@@ -145,6 +146,91 @@ export class S3StorageAdapter implements StorageAdapter {
   }
 }
 
+// ── Supabase adapter ──────────────────────────────────────────────
+
+/**
+ * Stores file-manager objects in the same Supabase bucket the website images
+ * use, under a "file-manager/" prefix so the two never collide.
+ *
+ * Unlike the website image path, these objects are NOT served straight off the
+ * public CDN URL: file-manager downloads are permission-checked, so
+ * getDownloadUrl returns null and the API streams the bytes through
+ * `retrieve()` exactly as the local adapter does. The bucket being public means
+ * a leaked object key is readable, which is why keys carry 8 random bytes.
+ */
+export class SupabaseStorageAdapter implements StorageAdapter {
+  private readonly url: string;
+  private readonly key: string;
+  private readonly bucket: string;
+  private readonly prefix = "file-manager";
+
+  constructor() {
+    const config = supabaseConfig();
+    if (!config) {
+      throw new Error(
+        "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required when STORAGE_BACKEND=supabase"
+      );
+    }
+    this.url = config.url;
+    this.key = config.key;
+    this.bucket = config.bucket;
+  }
+
+  private objectUrl(key: string): string {
+    return `${this.url}/storage/v1/object/${this.bucket}/${this.prefix}/${key}`;
+  }
+
+  async store(key: string, localFilePath: string): Promise<string> {
+    const body = await fs.promises.readFile(localFilePath);
+    const response = await fetch(this.objectUrl(key), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.key}`,
+        "Content-Type": "application/octet-stream",
+        "x-upsert": "true"
+      },
+      body: new Uint8Array(body)
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Supabase upload failed (${response.status}): ${detail.slice(0, 300)}`);
+    }
+
+    // Only remove the temp file once the bytes are safely stored, so a failed
+    // upload leaves something to retry from.
+    await fs.promises.unlink(localFilePath).catch(() => undefined);
+    logger.info("Supabase upload complete", { bucket: this.bucket, key });
+    return key;
+  }
+
+  async retrieve(key: string): Promise<Readable> {
+    const response = await fetch(this.objectUrl(key), {
+      headers: { Authorization: `Bearer ${this.key}` }
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Supabase object not found: ${key} (HTTP ${response.status})`);
+    }
+    return Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
+  }
+
+  async delete(key: string): Promise<void> {
+    const response = await fetch(this.objectUrl(key), {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${this.key}` }
+    });
+    // 404 means the object is already gone, which is the state we wanted.
+    if (!response.ok && response.status !== 404) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Supabase delete failed (${response.status}): ${detail.slice(0, 300)}`);
+    }
+  }
+
+  async getDownloadUrl(_key: string, _filename: string): Promise<string | null> {
+    return null; // stream through the API so permission checks still apply
+  }
+}
+
 // ── Factory ───────────────────────────────────────────────────────
 
 export function generateStorageKey(userId: string, originalName: string): string {
@@ -162,6 +248,9 @@ export function getStorageAdapter(): StorageAdapter {
   if (backend === "s3") {
     _adapter = new S3StorageAdapter();
     logger.info("Storage backend: S3", { bucket: env.S3_BUCKET });
+  } else if (backend === "supabase") {
+    _adapter = new SupabaseStorageAdapter();
+    logger.info("Storage backend: Supabase", { bucket: env.SUPABASE_STORAGE_BUCKET });
   } else {
     _adapter = new LocalStorageAdapter();
     logger.info("Storage backend: local", { dir: UPLOAD_DIR });

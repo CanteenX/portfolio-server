@@ -4,6 +4,9 @@ import helmet from "helmet";
 import path from "node:path";
 import { registerModuleRoutes } from "./bootstrap/module-registry";
 import { env } from "./config/env";
+import { IS_SERVERLESS } from "./config/runtime";
+import { isSupabaseConfigured } from "./core/storage/file-store";
+import { logger } from "./core/logging/logger";
 import { errorHandler } from "./middleware/error-handler";
 import { requestId } from "./middleware/request-id";
 import { requestLogger } from "./middleware/request-logger";
@@ -42,6 +45,17 @@ import { portfolioMastersRoutes } from "./modules/portfolio/portfolio-masters.ro
 
 export async function createApp() {
   const app = express();
+
+  // Uploads are the one feature that cannot work on a read-only filesystem, so
+  // say so loudly at cold start rather than letting the first admin upload be
+  // the thing that discovers it.
+  if (IS_SERVERLESS && !isSupabaseConfigured()) {
+    logger.warn(
+      "No object storage configured — image uploads will fail. Set SUPABASE_URL " +
+        "and SUPABASE_SERVICE_ROLE_KEY (the serverless filesystem is read-only)."
+    );
+  }
+
   const allowedOrigins = env.CORS_ORIGINS.split(",").map((item) => item.trim());
   let trustProxyValue: boolean | number = false;
   if (env.TRUST_PROXY === "true") {

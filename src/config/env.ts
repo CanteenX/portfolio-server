@@ -33,7 +33,14 @@ const envSchema = z.object({
   FILE_QUOTA_BYTES: z.coerce.number().default(500 * 1024 * 1024),
   EXPORT_MAX_ROWS: z.coerce.number().int().min(1).default(10000),
   IMPORT_MAX_ROWS: z.coerce.number().int().min(1).default(1000),
-  STORAGE_BACKEND: z.enum(["local", "s3"]).default("local"),
+  STORAGE_BACKEND: z.enum(["local", "s3", "supabase"]).default("local"),
+  // Supabase Storage. When SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are both
+  // set, website image uploads go to the bucket regardless of STORAGE_BACKEND —
+  // see src/core/storage/file-store.ts for why that is deliberate. The file
+  // manager module is the one that reads STORAGE_BACKEND.
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  SUPABASE_STORAGE_BUCKET: z.string().default("portfolio-uploads"),
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().default("us-east-1"),
   S3_ACCESS_KEY_ID: z.string().optional(),
@@ -78,6 +85,32 @@ const envSchema = z.object({
       path: ["API_KEY_HASH_SALT"]
     });
   }
+
+  const supabasePartiallyConfigured =
+    Boolean(data.SUPABASE_URL) !== Boolean(data.SUPABASE_SERVICE_ROLE_KEY);
+  if (supabasePartiallyConfigured) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set together — " +
+        "one without the other silently falls back to local disk storage",
+      path: [data.SUPABASE_URL ? "SUPABASE_SERVICE_ROLE_KEY" : "SUPABASE_URL"]
+    });
+  }
+
+  if (data.STORAGE_BACKEND === "supabase" && !data.SUPABASE_URL) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required when STORAGE_BACKEND=supabase",
+      path: ["SUPABASE_URL"]
+    });
+  }
+
+  // Deliberately NOT an error when storage is unconfigured on Vercel: uploads
+  // are one feature, and refusing to boot the whole API over them turns a
+  // broken upload button into a total outage. persistBuffer() and
+  // SupabaseStorageAdapter each throw with the same guidance at the point of
+  // use, which is the granularity that matches the blast radius.
 
   if (data.NODE_ENV === "production" && data.RABBITMQ_URL.includes("guest:guest")) {
     context.addIssue({
@@ -195,4 +228,16 @@ const envSchema = z.object({
   }
 });
 
-export const env = envSchema.parse(process.env);
+/**
+ * A variable that is present but empty ("FOO=") means the same thing as unset.
+ *
+ * Without this, leaving `SUPABASE_SERVICE_ROLE_KEY=` in .env while you go find
+ * the key reports "String must contain at least 1 character(s)" instead of the
+ * message that actually tells you what to do, and every `.default()` below is
+ * bypassed in favour of an empty string.
+ */
+const presentEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([, value]) => value !== "")
+);
+
+export const env = envSchema.parse(presentEnv);

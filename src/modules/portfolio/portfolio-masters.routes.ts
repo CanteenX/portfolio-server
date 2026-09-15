@@ -1,35 +1,21 @@
 import { ERROR_CODES } from "@admin-platform/shared-types";
-import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { Router } from "express";
 import mongoose from "mongoose";
 import multer from "multer";
-import { put as putBlob } from "@vercel/blob";
 import { z } from "zod";
-import { env } from "../../config/env";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
+import { persistBuffer } from "../../core/storage/file-store";
 import { TechStackModel, CategoryModel, YearModel, ClientModel } from "./portfolio-masters.models";
 
 const router = Router();
 const writeRateLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false });
 
 // ── Upload setup ──────────────────────────────────────────────────────────────
-
-const uploadDir = path.isAbsolute(env.FILE_UPLOAD_DIR)
-  ? path.join(env.FILE_UPLOAD_DIR, "portfolio")
-  : path.join(process.cwd(), env.FILE_UPLOAD_DIR, "portfolio");
-
-const useBlob = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-if (!useBlob) {
-  try {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  } catch {
-    // Filesystem may be read-only — only reached if the env is misconfigured.
-  }
-}
 
 const ALLOWED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"]);
 
@@ -46,9 +32,10 @@ const upload = multer({
 });
 
 // ── Image upload (auth required) ──────────────────────────────────────────────
-// In production (BLOB_READ_WRITE_TOKEN present) uploads go to Vercel Blob and
-// the response carries an absolute https URL. Locally we still write to disk
-// and serve via /uploads/portfolio/<file>.
+// Storage backend selection lives entirely in persistBuffer(): Supabase when it
+// is configured, local disk otherwise. The response carries whatever reference
+// was stored — an absolute Supabase CDN URL, or a "/uploads/..." path — and the
+// website's resolveImageUrl() handles both without caring which.
 
 router.post(
   "/api/v1/portfolio/upload/image",
@@ -58,21 +45,17 @@ router.post(
   async (req, res, next) => {
     try {
       if (!req.file) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "No image uploaded");
+      // A UUID rather than Date.now()+Math.random: two uploads in the same
+      // millisecond are plausible behind a rate limiter set to 60/min, and a
+      // collision here would overwrite somebody else's image.
       const ext = path.extname(req.file.originalname).toLowerCase() || ".bin";
-      const baseName = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-
-      if (useBlob) {
-        const blob = await putBlob(`portfolio/${baseName}`, req.file.buffer, {
-          access: "public",
-          contentType: req.file.mimetype,
-        });
-        res.json({ url: blob.url });
-        return;
-      }
-
-      const diskPath = path.join(uploadDir, baseName);
-      fs.writeFileSync(diskPath, req.file.buffer);
-      res.json({ url: `/uploads/portfolio/${baseName}` });
+      const url = await persistBuffer(
+        req.file.buffer,
+        `${randomUUID()}${ext}`,
+        req.file.mimetype,
+        "portfolio"
+      );
+      res.json({ url });
     } catch (error) {
       next(error);
     }
