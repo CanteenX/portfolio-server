@@ -9,17 +9,8 @@ import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { requireRole } from "../../core/rbac/role.middleware";
-import type { EmployeeDocument } from "../rbac/employee.model";
-import { EmployeeModel } from "../rbac/employee.model";
-import type { RoleMasterDocument } from "../rbac/role-master.model";
-import { RoleMasterModel } from "../rbac/role-master.model";
-import { MenuMasterModel } from "../rbac/menu-master.model";
-import { ActionTypeModel } from "../rbac/action-type.model";
-import { env } from "../../config/env";
-import type mongoose from "mongoose";
+import { buildRbacSnapshot } from "../../core/rbac/rbac-permission.middleware";
 
-type LeanEmployee = EmployeeDocument & { _id: mongoose.Types.ObjectId };
-type LeanRole = RoleMasterDocument & { _id: mongoose.Types.ObjectId };
 
 const router = Router();
 const loginSchema = z.object({
@@ -71,115 +62,30 @@ router.post("/api/v1/auth/login", loginRateLimiter, async (req, res, next) => {
   }
 });
 
-// GET /api/v1/auth/user/me — returns RBAC allowedMenus + permissions map for the current user
+// GET /api/v1/auth/user/me — RBAC snapshot for the current user
+//
+// Delegates to buildRbacSnapshot so this and the session bootstrap can never
+// disagree about what a user may do. They used to compute the same map
+// independently, which is how a client ends up rendering buttons the server
+// then rejects.
 router.get(
   "/api/v1/auth/user/me",
   authenticateJwt,
   requireRole(["super_admin", "admin"]),
   async (req: AuthenticatedRequest, res, next) => {
     try {
-      const isSuperAdmin = req.user!.role === "super_admin";
-
-      if (isSuperAdmin) {
-        const allMenus = await MenuMasterModel.find({
-          // clientCode: env.CLIENT_CODE,
-          isActive: true,
-        })
-          .sort({ isRoot: -1, sequence: 1 })
-          .lean()
-          .exec();
-        const allActions = await ActionTypeModel.find({
-          // clientCode: env.CLIENT_CODE,
-          isActive: true,
-        })
-          .lean()
-          .exec();
-        const permissions: Record<string, string[]> = {};
-        for (const menu of allMenus) {
-          permissions[menu.menuUrl] = allActions.map((a) => a.actionCode);
-        }
-        return res.json({
-          user: req.user,
-          allowedMenus: allMenus,
-          permissions,
-        });
-      }
-
-      const employee = (await EmployeeModel.findOne({ userId: req.user!.id })
-        .lean()
-        .exec()) as unknown as LeanEmployee | null;
-
-      if (!employee || !employee.roleId) {
-        return res.json({ user: req.user, allowedMenus: [], permissions: {} });
-      }
-
-      const role = (await RoleMasterModel.findById(employee.roleId)
-        .lean()
-        .exec()) as unknown as LeanRole | null;
-      if (!role) {
-        return res.json({ user: req.user, allowedMenus: [], permissions: {} });
-      }
-
-      const grantedMenuIds = new Set(
-        role.permissions.filter((p) => p.granted).map((p) => p.menuId),
-      );
-
-      const allowedMenus = await MenuMasterModel.find({
-        _id: { $in: Array.from(grantedMenuIds) },
-        clientCode: env.CLIENT_CODE,
-        isActive: true,
-      })
-        .sort({ isRoot: -1, sequence: 1 })
-        .lean()
-        .exec();
-
-      const actionTypeIds = new Set(
-        role.permissions.filter((p) => p.granted).map((p) => p.actionTypeId),
-      );
-      const actionTypes = await ActionTypeModel.find({
-        _id: { $in: Array.from(actionTypeIds) },
-        clientCode: env.CLIENT_CODE,
-        isActive: true,
-      })
-        .lean()
-        .exec();
-      const actionCodeMap = new Map(
-        actionTypes.map((a) => {
-          const typed = a as unknown as {
-            _id: mongoose.Types.ObjectId;
-            actionCode: string;
-          };
-          return [typed._id.toString(), typed.actionCode];
-        }),
-      );
-
-      const permissions: Record<string, string[]> = {};
-      for (const perm of role.permissions) {
-        if (!perm.granted) continue;
-        const menu = allowedMenus.find((m) => {
-          const typed = m as unknown as { _id: mongoose.Types.ObjectId };
-          return typed._id.toString() === perm.menuId;
-        });
-        const actionCode = actionCodeMap.get(perm.actionTypeId);
-        if (menu && actionCode) {
-          const typedMenu = menu as unknown as { menuUrl: string };
-          if (!permissions[typedMenu.menuUrl])
-            permissions[typedMenu.menuUrl] = [];
-          permissions[typedMenu.menuUrl].push(actionCode);
-        }
-      }
-
+      const snapshot = await buildRbacSnapshot(req.user!.id, req.user!.role);
       res.json({
         user: req.user,
-        allowedMenus,
-        permissions,
-        employeeId: employee._id,
-        roleName: role.roleName,
+        allowedMenus: snapshot.allowedMenus,
+        permissions: snapshot.permissions,
+        employeeId: snapshot.employeeId,
+        roleName: snapshot.roleName
       });
     } catch (error) {
       next(error);
     }
-  },
+  }
 );
 
 export const authRoutes = router;

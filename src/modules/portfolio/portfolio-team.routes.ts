@@ -1,4 +1,5 @@
 import { ERROR_CODES } from "@admin-platform/shared-types";
+import type { RoleKey } from "@admin-platform/shared-types";
 import rateLimit from "express-rate-limit";
 import { Router } from "express";
 import mongoose from "mongoose";
@@ -6,6 +7,11 @@ import { z } from "zod";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
+import { requireRole } from "../../core/rbac/role.middleware";
+import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+
+/** Both roles may reach these routes; what they may DO is decided per menu. */
+const ADMIN_ROLES: RoleKey[] = ["super_admin", "admin"];
 import { PortfolioMemberModel } from "./portfolio-team.models";
 
 const router = Router();
@@ -99,7 +105,7 @@ router.get("/api/v1/public/portfolio/team/:slug", readRateLimiter, async (req, r
 
 // ─── ADMIN ROUTES (auth required) ────────────────────────────────────────────
 
-router.get("/api/v1/portfolio/team", authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/portfolio/team", authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/team", "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { page, limit } = listQuerySchema.parse(req.query ?? {});
     const skip = (page - 1) * limit;
@@ -113,7 +119,7 @@ router.get("/api/v1/portfolio/team", authenticateJwt, async (req: AuthenticatedR
   }
 });
 
-router.post("/api/v1/portfolio/team", writeRateLimiter, authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.post("/api/v1/portfolio/team", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/team", "write"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const payload = createMemberSchema.parse(req.body ?? {});
     const created = await PortfolioMemberModel.create(payload);
@@ -127,7 +133,7 @@ router.post("/api/v1/portfolio/team", writeRateLimiter, authenticateJwt, async (
   }
 });
 
-router.get("/api/v1/portfolio/team/:id", authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/portfolio/team/:id", authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/team", "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     ensureValidObjectId(req.params.id);
     const member = await PortfolioMemberModel.findById(req.params.id).lean().exec();
@@ -138,7 +144,7 @@ router.get("/api/v1/portfolio/team/:id", authenticateJwt, async (req: Authentica
   }
 });
 
-router.patch("/api/v1/portfolio/team/:id", writeRateLimiter, authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.patch("/api/v1/portfolio/team/:id", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/team", "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
     ensureValidObjectId(req.params.id);
     const payload = updateMemberSchema.parse(req.body ?? {});
@@ -154,7 +160,7 @@ router.patch("/api/v1/portfolio/team/:id", writeRateLimiter, authenticateJwt, as
   }
 });
 
-router.delete("/api/v1/portfolio/team/:id", writeRateLimiter, authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.delete("/api/v1/portfolio/team/:id", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/team", "delete"), async (req: AuthenticatedRequest, res, next) => {
   try {
     ensureValidObjectId(req.params.id);
     const member = await PortfolioMemberModel.findById(req.params.id).exec();

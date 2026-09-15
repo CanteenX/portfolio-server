@@ -1,10 +1,16 @@
 import { ERROR_CODES } from "@admin-platform/shared-types";
+import type { RoleKey } from "@admin-platform/shared-types";
 import rateLimit from "express-rate-limit";
 import { Router } from "express";
 import { z } from "zod";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
+import { requireRole } from "../../core/rbac/role.middleware";
+import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+
+/** Both roles may reach these routes; what they may DO is decided per menu. */
+const ADMIN_ROLES: RoleKey[] = ["super_admin", "admin"];
 import { PortfolioSettingsModel } from "./portfolio-settings.models";
 
 const router = Router();
@@ -77,7 +83,7 @@ router.get("/api/v1/public/portfolio/settings", async (_req, res, next) => {
 
 // ─── ADMIN ROUTES (auth required) ────────────────────────────────────────────
 
-router.get("/api/v1/portfolio/settings", authenticateJwt, async (_req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/portfolio/settings", authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/settings", "read"), async (_req: AuthenticatedRequest, res, next) => {
   try {
     const settings = await PortfolioSettingsModel.findOne().lean().exec();
     res.json(settings ?? {});
@@ -86,7 +92,7 @@ router.get("/api/v1/portfolio/settings", authenticateJwt, async (_req: Authentic
   }
 });
 
-router.put("/api/v1/portfolio/settings", writeRateLimiter, authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.put("/api/v1/portfolio/settings", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/settings", "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const payload = settingsSchema.parse(req.body ?? {});
     const updated = await PortfolioSettingsModel.findOneAndUpdate({}, { $set: payload }, { new: true, upsert: true, runValidators: true }).lean().exec();

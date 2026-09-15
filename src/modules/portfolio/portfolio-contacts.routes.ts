@@ -1,4 +1,5 @@
 import { ERROR_CODES } from "@admin-platform/shared-types";
+import type { RoleKey } from "@admin-platform/shared-types";
 import rateLimit from "express-rate-limit";
 import { Router } from "express";
 import mongoose from "mongoose";
@@ -6,6 +7,11 @@ import { z } from "zod";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
+import { requireRole } from "../../core/rbac/role.middleware";
+import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+
+/** Both roles may reach these routes; what they may DO is decided per menu. */
+const ADMIN_ROLES: RoleKey[] = ["super_admin", "admin"];
 import { PortfolioContactModel } from "./portfolio-contacts.models";
 
 const router = Router();
@@ -50,7 +56,7 @@ router.post("/api/v1/public/portfolio/contact", submitRateLimiter, async (req, r
 
 // ─── ADMIN ROUTES (auth required) ────────────────────────────────────────────
 
-router.get("/api/v1/portfolio/contacts", authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/portfolio/contacts", authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/contacts", "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { page, limit, status } = listQuerySchema.parse(req.query ?? {});
     const skip = (page - 1) * limit;
@@ -66,7 +72,7 @@ router.get("/api/v1/portfolio/contacts", authenticateJwt, async (req: Authentica
   }
 });
 
-router.patch("/api/v1/portfolio/contacts/:id/status", authenticateJwt, async (req: AuthenticatedRequest, res, next) => {
+router.patch("/api/v1/portfolio/contacts/:id/status", authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/contacts", "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
     ensureValidObjectId(req.params.id);
     const { status } = z.object({ status: z.enum(["new", "read", "replied"]) }).parse(req.body ?? {});

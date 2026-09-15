@@ -4,6 +4,7 @@ import type { Express } from "express";
 import { createApp } from "../src/app";
 import { connectDatabase } from "../src/config/db";
 import { seedMenusIfEmpty } from "../src/modules/menu/menu.seed";
+import { seedRbacBaseline } from "../src/bootstrap/seed-rbac";
 import { logger } from "../src/core/logging/logger";
 
 type CachedState = {
@@ -24,6 +25,16 @@ async function getApp(): Promise<Express> {
         await seedMenusIfEmpty();
       } catch (err) {
         logger.warn("Menu seed skipped on cold start", { error: err });
+      }
+      try {
+        // Not covered by seedBaseline(): that only runs from src/main.ts, which
+        // is not the deployed entry point. Without this, MenuMaster and
+        // ActionType stay empty in production and every RBAC-guarded route
+        // denies every non-super-admin. Idempotent, so running it per cold
+        // start is cheap after the first.
+        await seedRbacBaseline();
+      } catch (err) {
+        logger.error("RBAC seed failed on cold start — guarded routes will deny", { error: err });
       }
       return await createApp();
     })().catch((err) => {

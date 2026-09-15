@@ -17,6 +17,7 @@ import { featureConfigService } from "../../core/feature-flags/feature-config.se
 import { uiFeatureFlagsService } from "../../core/feature-flags/ui-feature-flags.service";
 import { UI_FEATURE_FLAG_KEYS } from "@admin-platform/shared-types";
 import { requireRole } from "../../core/rbac/role.middleware";
+import { buildRbacSnapshot } from "../../core/rbac/rbac-permission.middleware";
 import { getPermissionsByRole } from "../../core/rbac/permissions";
 import { ERROR_CODES } from "@admin-platform/shared-types";
 import { env } from "../../config/env";
@@ -81,9 +82,12 @@ router.get(
         }
       }
 
-      const [uiFeatureFlags, menuGroups] = await Promise.all([
+      const [uiFeatureFlags, menuGroups, rbac] = await Promise.all([
         uiFeatureFlagsService.getFlags(),
         menuService.listGroupsWithMenus(),
+        // Same builder GET /auth/user/me uses, so the bootstrap and that
+        // endpoint cannot disagree about what this user may do.
+        buildRbacSnapshot(req.user!.id, role),
       ]);
 
       // For admin with custom role, include structured permissions
@@ -106,6 +110,10 @@ router.get(
         features,
         uiFeatureFlags,
         menuGroups,
+        rbacPermissions: rbac.permissions,
+        rbacAllowedMenus: rbac.allowedMenus,
+        rbacRoleName: rbac.roleName,
+        employeeId: rbac.employeeId,
         ...(currentRolePermissions ? { currentRolePermissions } : {}),
         moduleCatalog: MODULE_DEFINITIONS,
         ...(customRole ? { customRole } : {}),
