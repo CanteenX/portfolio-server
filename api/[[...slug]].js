@@ -5,6 +5,9 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -27,6 +30,63 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// src/core/audit/audit-log.model.ts
+var import_mongoose7, auditLogSchema, AuditLogModel;
+var init_audit_log_model = __esm({
+  "src/core/audit/audit-log.model.ts"() {
+    "use strict";
+    import_mongoose7 = __toESM(require("mongoose"), 1);
+    auditLogSchema = new import_mongoose7.Schema(
+      {
+        action: { type: String, required: true, index: true },
+        entity: { type: String, required: true, index: true },
+        entityId: { type: String },
+        userId: { type: String, required: true, index: true },
+        userEmail: { type: String },
+        before: { type: import_mongoose7.Schema.Types.Mixed },
+        after: { type: import_mongoose7.Schema.Types.Mixed },
+        metadata: { type: import_mongoose7.Schema.Types.Mixed },
+        createdAt: { type: Date, default: () => /* @__PURE__ */ new Date(), index: true }
+      },
+      { timestamps: false }
+    );
+    auditLogSchema.index({ entity: 1, action: 1, createdAt: -1 });
+    AuditLogModel = import_mongoose7.default.models.AuditLog ?? import_mongoose7.default.model("AuditLog", auditLogSchema);
+  }
+});
+
+// src/core/audit/audit-log.service.ts
+var audit_log_service_exports = {};
+__export(audit_log_service_exports, {
+  auditLogService: () => auditLogService
+});
+var AuditLogService, auditLogService;
+var init_audit_log_service = __esm({
+  "src/core/audit/audit-log.service.ts"() {
+    "use strict";
+    init_audit_log_model();
+    AuditLogService = class {
+      async log(entry) {
+        await AuditLogModel.create(entry);
+      }
+      async getRecent(options = {}) {
+        const filter = {};
+        if (options.entity) {
+          filter.entity = options.entity;
+        }
+        const limit = Math.min(options.limit ?? 50, 200);
+        const offset = options.offset ?? 0;
+        const [items, total] = await Promise.all([
+          AuditLogModel.find(filter).sort({ createdAt: -1 }).skip(offset).limit(limit).lean().exec(),
+          AuditLogModel.countDocuments(filter).exec()
+        ]);
+        return { items, total };
+      }
+    };
+    auditLogService = new AuditLogService();
+  }
+});
+
 // api-src/entry.ts
 var entry_exports = {};
 __export(entry_exports, {
@@ -38,9 +98,9 @@ var import_config = require("dotenv/config");
 
 // src/app.ts
 var import_cors = __toESM(require("cors"), 1);
-var import_express31 = __toESM(require("express"), 1);
+var import_express37 = __toESM(require("express"), 1);
 var import_helmet = __toESM(require("helmet"), 1);
-var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_path6 = __toESM(require("node:path"), 1);
 
 // src/shared/types/errors.ts
 var ERROR_CODES = {
@@ -133,20 +193,6 @@ var DEFAULT_UI_FEATURE_FLAGS = Object.fromEntries(
   UI_FEATURE_FLAG_KEYS.map((key) => [key, true])
 );
 
-// src/core/errors/app-error.ts
-var AppError = class extends Error {
-  statusCode;
-  code;
-  constructor(statusCode, code, message) {
-    super(message);
-    this.statusCode = statusCode;
-    this.code = code;
-  }
-};
-
-// src/core/auth/jwt.ts
-var import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
-
 // src/config/env.ts
 var import_dotenv = __toESM(require("dotenv"), 1);
 var import_zod = require("zod");
@@ -159,13 +205,35 @@ var envSchema = import_zod.z.object({
   JWT_SECRET_ADMIN: import_zod.z.string().min(8),
   JWT_EXPIRES_IN: import_zod.z.string().default("1d"),
   CLIENT_CODE: import_zod.z.string().default("default-client"),
-  CORS_ORIGINS: import_zod.z.string().default("http://localhost:3000,http://localhost:3001,http://localhost:5173"),
+  // 3000 admin (CRA), 4000 website (next dev). Keep in sync with .env.example.
+  CORS_ORIGINS: import_zod.z.string().default("http://localhost:3000,http://localhost:3001,http://localhost:4000"),
   TRUST_PROXY: import_zod.z.string().default("0"),
   ENABLE_SEED: import_zod.z.enum(["true", "false"]).default("false"),
+  /**
+   * Kill switch for menu-driven RBAC on the 14 legacy modules.
+   *
+   *   off     — legacy behaviour, no RBAC evaluation (the default: a deploy
+   *             that forgets this variable must not start denying traffic)
+   *   shadow  — evaluate and log `rbac.shadow_deny`, but always allow
+   *   enforce — deny on failure
+   *
+   * Rollback is therefore an env change, not a git revert, which matters when
+   * the blast radius is every module route at once.
+   */
+  RBAC_MODULE_MODE: import_zod.z.enum(["off", "shadow", "enforce"]).default("off"),
+  /**
+   * Whether the seed may grant an access-less admin the Administrator role.
+   *
+   * On until every admin has a deliberate role. After that it is a liability:
+   * the backfill cannot tell "never configured" from "access removed on
+   * purpose", so leaving it on means any account reduced to zero grants is
+   * restored on the next cold start. Turn it off once the migration is done.
+   */
+  RBAC_BACKFILL_ENABLED: import_zod.z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   API_KEY_HASH_SALT: import_zod.z.string().min(16).default("replace_api_key_hash_salt"),
   PAYMENT_DEFAULT_SUCCESS_URL: import_zod.z.string().url().default("http://localhost:5173/payment/success"),
   PAYMENT_DEFAULT_CANCEL_URL: import_zod.z.string().url().default("http://localhost:5173/payment/cancel"),
-  PAYMENT_ALLOWED_REDIRECT_ORIGINS: import_zod.z.string().default("http://localhost:3000,http://localhost:3001,http://localhost:5173"),
+  PAYMENT_ALLOWED_REDIRECT_ORIGINS: import_zod.z.string().default("http://localhost:3000,http://localhost:3001,http://localhost:4000"),
   STRIPE_SECRET_KEY: import_zod.z.string().min(1).optional(),
   STRIPE_WEBHOOK_SECRET: import_zod.z.string().min(1).optional(),
   PAYPAL_MODE: import_zod.z.enum(["sandbox", "live"]).default("sandbox"),
@@ -181,7 +249,14 @@ var envSchema = import_zod.z.object({
   FILE_QUOTA_BYTES: import_zod.z.coerce.number().default(500 * 1024 * 1024),
   EXPORT_MAX_ROWS: import_zod.z.coerce.number().int().min(1).default(1e4),
   IMPORT_MAX_ROWS: import_zod.z.coerce.number().int().min(1).default(1e3),
-  STORAGE_BACKEND: import_zod.z.enum(["local", "s3"]).default("local"),
+  STORAGE_BACKEND: import_zod.z.enum(["local", "s3", "supabase"]).default("local"),
+  // Supabase Storage. When SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are both
+  // set, website image uploads go to the bucket regardless of STORAGE_BACKEND —
+  // see src/core/storage/file-store.ts for why that is deliberate. The file
+  // manager module is the one that reads STORAGE_BACKEND.
+  SUPABASE_URL: import_zod.z.string().url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: import_zod.z.string().min(1).optional(),
+  SUPABASE_STORAGE_BUCKET: import_zod.z.string().default("portfolio-uploads"),
   S3_BUCKET: import_zod.z.string().optional(),
   S3_REGION: import_zod.z.string().default("us-east-1"),
   S3_ACCESS_KEY_ID: import_zod.z.string().optional(),
@@ -192,6 +267,19 @@ var envSchema = import_zod.z.object({
   SMTP_SECURE: import_zod.z.enum(["true", "false"]).default("false"),
   SMTP_USER: import_zod.z.string().optional(),
   SMTP_PASS: import_zod.z.string().optional(),
+  /** Envelope sender. Falls back to SMTP_USER when unset. */
+  SMTP_FROM: import_zod.z.string().optional(),
+  /** Where new-lead notifications go. Without it, nothing is notified. */
+  LEAD_NOTIFY_TO: import_zod.z.string().optional(),
+  /**
+   * On-demand ISR revalidation for the public website.
+   *
+   * Both must be set for it to run; either alone is a no-op rather than an
+   * error, because a missing revalidation degrades to the existing hourly
+   * refresh and must not stop the API booting.
+   */
+  WEBSITE_REVALIDATE_URL: import_zod.z.string().url().optional(),
+  REVALIDATE_SECRET: import_zod.z.string().min(16).optional(),
   // WhatsApp Meta API Configuration
   WHATSAPP_ACCESS_TOKEN: import_zod.z.string().min(1).optional(),
   WHATSAPP_PHONE_NUMBER_ID: import_zod.z.string().min(1).optional(),
@@ -220,6 +308,21 @@ var envSchema = import_zod.z.object({
       code: import_zod.z.ZodIssueCode.custom,
       message: "API_KEY_HASH_SALT must be explicitly set in production",
       path: ["API_KEY_HASH_SALT"]
+    });
+  }
+  const supabasePartiallyConfigured = Boolean(data.SUPABASE_URL) !== Boolean(data.SUPABASE_SERVICE_ROLE_KEY);
+  if (supabasePartiallyConfigured) {
+    context.addIssue({
+      code: import_zod.z.ZodIssueCode.custom,
+      message: "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set together \u2014 one without the other silently falls back to local disk storage",
+      path: [data.SUPABASE_URL ? "SUPABASE_SERVICE_ROLE_KEY" : "SUPABASE_URL"]
+    });
+  }
+  if (data.STORAGE_BACKEND === "supabase" && !data.SUPABASE_URL) {
+    context.addIssue({
+      code: import_zod.z.ZodIssueCode.custom,
+      message: "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required when STORAGE_BACKEND=supabase",
+      path: ["SUPABASE_URL"]
     });
   }
   if (data.NODE_ENV === "production" && data.RABBITMQ_URL.includes("guest:guest")) {
@@ -330,9 +433,24 @@ var envSchema = import_zod.z.object({
     }
   }
 });
-var env = envSchema.parse(process.env);
+var presentEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([, value]) => value !== "")
+);
+var env = envSchema.parse(presentEnv);
+
+// src/core/errors/app-error.ts
+var AppError = class extends Error {
+  statusCode;
+  code;
+  constructor(statusCode, code, message) {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+};
 
 // src/core/auth/jwt.ts
+var import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
 function getSecret(role) {
   return role === "super_admin" ? env.JWT_SECRET_SUPER_ADMIN : env.JWT_SECRET_ADMIN;
 }
@@ -342,14 +460,16 @@ function signToken(payload) {
   });
 }
 function verifyToken(token) {
-  const secrets = [env.JWT_SECRET_SUPER_ADMIN, env.JWT_SECRET_ADMIN];
-  for (const secret of secrets) {
-    try {
-      return import_jsonwebtoken.default.verify(token, secret);
-    } catch {
-    }
+  const claimed = import_jsonwebtoken.default.decode(token);
+  const role = claimed?.role;
+  if (role !== "super_admin" && role !== "admin") {
+    throw new import_jsonwebtoken.default.JsonWebTokenError("Invalid or expired token");
   }
-  throw new import_jsonwebtoken.default.JsonWebTokenError("Invalid or expired token");
+  const payload = import_jsonwebtoken.default.verify(token, getSecret(role));
+  if (payload.role !== role) {
+    throw new import_jsonwebtoken.default.JsonWebTokenError("Invalid or expired token");
+  }
+  return payload;
 }
 
 // src/core/auth/auth.middleware.ts
@@ -462,61 +582,6 @@ function requireFeatureEnabled(moduleKey) {
   };
 }
 
-// src/core/rbac/permission.middleware.ts
-function requirePermission(requiredPermission) {
-  return (req, _res, next) => {
-    if (!req.user) {
-      next(new AppError(401, ERROR_CODES.UNAUTHORIZED, "Not authenticated"));
-      return;
-    }
-    if (req.user.role === "super_admin" || !requiredPermission) {
-      next();
-      return;
-    }
-    const rolePermissions2 = new Set(getPermissionsByRole(req.user.role));
-    if (!rolePermissions2.has(requiredPermission)) {
-      next(new AppError(403, ERROR_CODES.FORBIDDEN, "Permission denied"));
-      return;
-    }
-    next();
-  };
-}
-
-// src/core/rbac/role.middleware.ts
-function requireRole(allowedRoles) {
-  return (req, _res, next) => {
-    if (!req.user) {
-      next(new AppError(401, ERROR_CODES.UNAUTHORIZED, "Not authenticated"));
-      return;
-    }
-    if (!allowedRoles.includes(req.user.role)) {
-      next(new AppError(403, ERROR_CODES.FORBIDDEN, "Role is not allowed"));
-      return;
-    }
-    next();
-  };
-}
-
-// src/bootstrap/module-registry.ts
-function guardChain(route) {
-  return [
-    authenticateJwt,
-    requireRole(["super_admin", "admin"]),
-    requireFeatureEnabled(route.moduleKey),
-    requirePermission(route.permission)
-  ];
-}
-function registerModuleRoutes(app, manifests) {
-  manifests.forEach((manifest) => {
-    manifest.routes.forEach((route) => {
-      if (!route.permission) {
-        throw new Error(`Missing permission metadata for route ${route.method.toUpperCase()} ${route.path}`);
-      }
-      app[route.method](route.path, ...guardChain(route), route.handler);
-    });
-  });
-}
-
 // src/core/logging/logger.ts
 var import_pino = __toESM(require("pino"), 1);
 var pinoInstance = (0, import_pino.default)({
@@ -560,6 +625,561 @@ var logger = {
   /** Raw pino instance for advanced usage. */
   pino: pinoInstance
 };
+
+// src/core/rbac/module-menu-map.ts
+var MODULE_MENU_URL = {
+  calendar: "/calendar",
+  chat: "/chat",
+  mailbox: "/mailbox",
+  ecommerce: "/ecommerce",
+  projects: "/projects",
+  tasks: "/tasks",
+  crm: "/crm",
+  invoices: "/invoices",
+  "support-tickets": "/support-tickets",
+  "file-manager": "/file-manager",
+  todo: "/todo",
+  job: "/job",
+  "api-management": "/api-management",
+  whatsapp: "/whatsapp"
+};
+var MODULE_MENU_URLS = MODULE_KEYS.map((key) => MODULE_MENU_URL[key]);
+var LEGACY_ACTION_TO_RBAC = {
+  read: "read",
+  create: "write",
+  update: "edit",
+  delete: "delete",
+  export: "print",
+  // Already-canonical codes pass through, so a call site may be written either
+  // way and neither needs migrating.
+  write: "write",
+  edit: "edit",
+  print: "print",
+  mail: "mail"
+};
+function resolveRbacAction(permission) {
+  const tail = permission.includes(".") ? permission.slice(permission.lastIndexOf(".") + 1) : permission;
+  return LEGACY_ACTION_TO_RBAC[tail.toLowerCase()] ?? null;
+}
+
+// src/core/rbac/permission.middleware.ts
+function requirePermission(requiredPermission) {
+  return (req, _res, next) => {
+    if (!req.user) {
+      next(new AppError(401, ERROR_CODES.UNAUTHORIZED, "Not authenticated"));
+      return;
+    }
+    if (req.user.role === "super_admin" || !requiredPermission) {
+      next();
+      return;
+    }
+    const rolePermissions2 = new Set(getPermissionsByRole(req.user.role));
+    if (!rolePermissions2.has(requiredPermission)) {
+      next(new AppError(403, ERROR_CODES.FORBIDDEN, "Permission denied"));
+      return;
+    }
+    next();
+  };
+}
+
+// src/core/rbac/rbac-permission.middleware.ts
+var import_mongoose6 = __toESM(require("mongoose"), 1);
+
+// src/modules/rbac/action-type.model.ts
+var import_mongoose2 = __toESM(require("mongoose"), 1);
+var actionTypeSchema = new import_mongoose2.Schema(
+  {
+    clientCode: { type: String, required: true },
+    actionName: { type: String, required: true, maxlength: 60 },
+    actionCode: { type: String, required: true, maxlength: 30 },
+    isActive: { type: Boolean, required: true, default: true }
+  },
+  { timestamps: true }
+);
+actionTypeSchema.index({ clientCode: 1, actionCode: 1 }, { unique: true });
+var ActionTypeModel = import_mongoose2.default.models.ActionType ?? import_mongoose2.default.model("ActionType", actionTypeSchema);
+
+// src/modules/rbac/employee.model.ts
+var import_mongoose3 = __toESM(require("mongoose"), 1);
+var employeeSchema = new import_mongoose3.Schema(
+  {
+    clientCode: { type: String, required: true },
+    userId: { type: import_mongoose3.Schema.Types.ObjectId, ref: "User", required: true, unique: true },
+    employeeName: { type: String, required: true, maxlength: 100 },
+    emailOffice: { type: String, required: true },
+    department: { type: String, maxlength: 100, default: "" },
+    contact: { type: String, maxlength: 20, default: "" },
+    roleId: { type: import_mongoose3.Schema.Types.ObjectId, ref: "RoleMaster", default: null },
+    parentEmployeeId: { type: import_mongoose3.Schema.Types.ObjectId, ref: "Employee", default: null },
+    ancestorIds: { type: [import_mongoose3.Schema.Types.ObjectId], default: [] },
+    isActive: { type: Boolean, required: true, default: true },
+    accessLocked: { type: Boolean, required: true, default: false },
+    createdBy: { type: String, default: null },
+    updatedBy: { type: String, required: true }
+  },
+  { timestamps: true }
+);
+employeeSchema.index({ clientCode: 1 });
+employeeSchema.index({ ancestorIds: 1 });
+employeeSchema.index({ clientCode: 1, emailOffice: 1 });
+var EmployeeModel = import_mongoose3.default.models.Employee ?? import_mongoose3.default.model("Employee", employeeSchema);
+
+// src/modules/rbac/menu-master.model.ts
+var import_mongoose4 = __toESM(require("mongoose"), 1);
+var menuMasterSchema = new import_mongoose4.Schema(
+  {
+    clientCode: { type: String, required: true },
+    menuName: { type: String, required: true, maxlength: 100 },
+    isRoot: { type: Boolean, required: true, default: true },
+    isParentMenu: { type: Boolean, required: true, default: false },
+    parentMenu: {
+      type: import_mongoose4.Schema.Types.ObjectId,
+      ref: "MenuMaster",
+      default: null
+    },
+    menuUrl: { type: String, required: true, maxlength: 255 },
+    sequence: { type: Number, required: true, default: 0 },
+    icon: { type: String, maxlength: 100, default: "" },
+    isActive: { type: Boolean, required: true, default: true },
+    createdBy: { type: String, default: null },
+    updatedBy: { type: String, required: true }
+  },
+  { timestamps: true }
+);
+menuMasterSchema.index({ clientCode: 1, menuUrl: 1 }, { unique: true });
+menuMasterSchema.index({ clientCode: 1, isRoot: 1, sequence: 1 });
+var MenuMasterModel = import_mongoose4.default.models.MenuMaster ?? import_mongoose4.default.model("MenuMaster", menuMasterSchema);
+
+// src/modules/rbac/role-master.model.ts
+var import_mongoose5 = __toESM(require("mongoose"), 1);
+var rolePermissionSchema = new import_mongoose5.Schema(
+  {
+    menuId: { type: String, required: true },
+    actionTypeId: { type: String, required: true },
+    granted: { type: Boolean, required: true, default: false }
+  },
+  { _id: false }
+);
+var roleMasterSchema = new import_mongoose5.Schema(
+  {
+    clientCode: { type: String, required: true },
+    roleName: { type: String, required: true, maxlength: 60 },
+    permissions: { type: [rolePermissionSchema], default: [] },
+    isActive: { type: Boolean, required: true, default: true },
+    createdBy: { type: String, default: null },
+    updatedBy: { type: String, required: true }
+  },
+  { timestamps: true }
+);
+roleMasterSchema.index({ clientCode: 1, roleName: 1 }, { unique: true });
+var RoleMasterModel = import_mongoose5.default.models.RoleMaster ?? import_mongoose5.default.model("RoleMaster", roleMasterSchema);
+
+// src/core/rbac/rbac-permission.middleware.ts
+var ACTION_CODES = ["read", "write", "edit", "delete", "print", "mail"];
+var LOOKUP_TTL_MS = 6e4;
+var menuIdCache = /* @__PURE__ */ new Map();
+var actionIdCache = /* @__PURE__ */ new Map();
+function readCache(cache, key) {
+  const hit = cache.get(key);
+  if (!hit) return void 0;
+  if (hit.expiresAt < Date.now()) {
+    cache.delete(key);
+    return void 0;
+  }
+  return hit.id;
+}
+function writeCache(cache, key, id) {
+  cache.set(key, { id, expiresAt: Date.now() + LOOKUP_TTL_MS });
+}
+function invalidateRbacLookups() {
+  menuIdCache.clear();
+  actionIdCache.clear();
+}
+async function resolveMenuId(menuUrl) {
+  const cached = readCache(menuIdCache, menuUrl);
+  if (cached !== void 0) return cached;
+  const menu = await MenuMasterModel.findOne({
+    clientCode: env.CLIENT_CODE,
+    menuUrl,
+    isActive: true
+  }).select("_id").lean().exec();
+  const id = menu ? String(menu._id) : null;
+  writeCache(menuIdCache, menuUrl, id);
+  return id;
+}
+async function resolveActionTypeId(actionCode) {
+  const cached = readCache(actionIdCache, actionCode);
+  if (cached !== void 0) return cached;
+  const action = await ActionTypeModel.findOne({
+    clientCode: env.CLIENT_CODE,
+    actionCode,
+    isActive: true
+  }).select("_id").lean().exec();
+  const id = action ? String(action._id) : null;
+  writeCache(actionIdCache, actionCode, id);
+  return id;
+}
+async function loadRoleFor(userId) {
+  if (!import_mongoose6.default.Types.ObjectId.isValid(userId)) return null;
+  const employee = await EmployeeModel.findOne({
+    userId: new import_mongoose6.default.Types.ObjectId(userId),
+    isActive: true
+  }).select("roleId").lean().exec();
+  if (!employee?.roleId) return null;
+  const role = await RoleMasterModel.findOne({ _id: employee.roleId, isActive: true }).select("roleName permissions").lean().exec();
+  if (!role) return null;
+  return {
+    roleId: String(role._id),
+    roleName: role.roleName,
+    permissions: role.permissions ?? []
+  };
+}
+async function checkRbacPermission(userId, menuUrl, actionCode) {
+  const [menuId, actionTypeId] = await Promise.all([
+    resolveMenuId(menuUrl),
+    resolveActionTypeId(actionCode)
+  ]);
+  if (!menuId) {
+    return { menuFound: false, actionFound: Boolean(actionTypeId), hasRole: true, allowed: false };
+  }
+  if (!actionTypeId) return { menuFound: true, actionFound: false, hasRole: true, allowed: false };
+  const role = await loadRoleFor(userId);
+  if (!role) return { menuFound: true, actionFound: true, hasRole: false, allowed: false };
+  const allowed = role.permissions.some(
+    (entry) => entry.granted && String(entry.menuId) === menuId && String(entry.actionTypeId) === actionTypeId
+  );
+  return { menuFound: true, actionFound: true, hasRole: true, allowed };
+}
+function requireRbacPermission(menuUrl, actionCode) {
+  return async (req, _res, next) => {
+    try {
+      if (!req.user) {
+        next(new AppError(401, ERROR_CODES.UNAUTHORIZED, "Not authenticated"));
+        return;
+      }
+      if (req.user.role === "super_admin") {
+        next();
+        return;
+      }
+      const answer = await checkRbacPermission(req.user.id, menuUrl, actionCode);
+      if (!answer.menuFound || !answer.actionFound) {
+        logger.error("RBAC lookup failed \u2014 run the RBAC seed", {
+          menuUrl,
+          actionCode,
+          menuFound: answer.menuFound,
+          actionFound: answer.actionFound
+        });
+        next(new AppError(403, ERROR_CODES.FORBIDDEN, "Permission denied"));
+        return;
+      }
+      if (!answer.hasRole) {
+        next(
+          new AppError(
+            403,
+            ERROR_CODES.FORBIDDEN,
+            "You have no role assigned \u2014 ask a super admin to assign one."
+          )
+        );
+        return;
+      }
+      if (!answer.allowed) {
+        next(
+          new AppError(
+            403,
+            ERROR_CODES.FORBIDDEN,
+            `Access denied \u2014 no '${actionCode}' permission for this module`
+          )
+        );
+        return;
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+function requireAnyRbacPermission(menuUrls, actionCode) {
+  return async (req, _res, next) => {
+    try {
+      if (!req.user) {
+        next(new AppError(401, ERROR_CODES.UNAUTHORIZED, "Not authenticated"));
+        return;
+      }
+      if (req.user.role === "super_admin") {
+        next();
+        return;
+      }
+      const answers = await Promise.all(
+        menuUrls.map((menuUrl) => checkRbacPermission(req.user.id, menuUrl, actionCode))
+      );
+      if (answers.some((answer) => answer.allowed)) {
+        next();
+        return;
+      }
+      if (!answers.some((answer) => answer.menuFound)) {
+        logger.error("RBAC lookup failed for every candidate menu \u2014 run the RBAC seed", {
+          menuUrls,
+          actionCode
+        });
+      }
+      next(
+        new AppError(
+          403,
+          ERROR_CODES.FORBIDDEN,
+          `Access denied \u2014 no '${actionCode}' permission for this module`
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+async function buildRbacSnapshot(userId, role) {
+  const [menus, actions] = await Promise.all([
+    MenuMasterModel.find({ clientCode: env.CLIENT_CODE, isActive: true }).sort({ isRoot: -1, sequence: 1 }).lean().exec(),
+    ActionTypeModel.find({ clientCode: env.CLIENT_CODE, isActive: true }).lean().exec()
+  ]);
+  if (role === "super_admin") {
+    const everyAction = actions.map((a) => a.actionCode);
+    const permissions2 = {};
+    for (const menu of menus) {
+      permissions2[menu.menuUrl] = [...everyAction];
+    }
+    return { permissions: permissions2, allowedMenus: menus, employeeId: null, roleName: "Super Admin" };
+  }
+  const employee = await EmployeeModel.findOne({
+    userId: new import_mongoose6.default.Types.ObjectId(userId),
+    isActive: true
+  }).lean().exec();
+  const grantedRole = await loadRoleFor(userId);
+  if (!employee || !grantedRole) {
+    return { permissions: {}, allowedMenus: [], employeeId: employee ? String(employee._id) : null, roleName: null };
+  }
+  const menuUrlById = new Map(
+    menus.map((m) => {
+      const typed = m;
+      return [String(typed._id), typed.menuUrl];
+    })
+  );
+  const actionCodeById = new Map(
+    actions.map((a) => {
+      const typed = a;
+      return [String(typed._id), typed.actionCode];
+    })
+  );
+  const permissions = {};
+  const grantedMenuIds = /* @__PURE__ */ new Set();
+  for (const entry of grantedRole.permissions) {
+    if (!entry.granted) continue;
+    const menuUrl = menuUrlById.get(String(entry.menuId));
+    const actionCode = actionCodeById.get(String(entry.actionTypeId));
+    if (!menuUrl || !actionCode) continue;
+    grantedMenuIds.add(String(entry.menuId));
+    if (!permissions[menuUrl]) permissions[menuUrl] = [];
+    if (!permissions[menuUrl].includes(actionCode)) permissions[menuUrl].push(actionCode);
+  }
+  const allowedMenus = menus.filter(
+    (m) => grantedMenuIds.has(String(m._id))
+  );
+  return {
+    permissions,
+    allowedMenus,
+    employeeId: String(employee._id),
+    roleName: grantedRole.roleName
+  };
+}
+
+// src/core/rbac/role.middleware.ts
+function requireRole(allowedRoles) {
+  return (req, _res, next) => {
+    if (!req.user) {
+      next(new AppError(401, ERROR_CODES.UNAUTHORIZED, "Not authenticated"));
+      return;
+    }
+    if (!allowedRoles.includes(req.user.role)) {
+      next(new AppError(403, ERROR_CODES.FORBIDDEN, "Role is not allowed"));
+      return;
+    }
+    next();
+  };
+}
+
+// src/core/http/module-guards.ts
+async function recordShadowDeny(detail) {
+  try {
+    const { auditLogService: auditLogService2 } = await Promise.resolve().then(() => (init_audit_log_service(), audit_log_service_exports));
+    await auditLogService2.log({
+      action: "rbac.shadow_deny",
+      entity: "rbac.module",
+      entityId: String(detail.menuUrl ?? ""),
+      userId: String(detail.userId ?? "unknown"),
+      userEmail: detail.email ? String(detail.email) : void 0,
+      metadata: detail
+    });
+  } catch (error) {
+    logger.error("Could not persist shadow deny", {
+      event: "rbac.shadow_deny_unrecorded",
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+function rbacModuleGuard(moduleKey, permission) {
+  return async (req, _res, next) => {
+    const mode = env.RBAC_MODULE_MODE;
+    if (mode === "off") {
+      next();
+      return;
+    }
+    if (!req.user || req.user.role === "super_admin") {
+      next();
+      return;
+    }
+    const menuUrl = MODULE_MENU_URL[moduleKey];
+    const actionCode = resolveRbacAction(permission);
+    if (!menuUrl || !actionCode) {
+      logger.error("RBAC module guard could not be evaluated", {
+        event: "rbac.map_missing",
+        moduleKey,
+        permission,
+        menuUrl: menuUrl ?? null,
+        actionCode: actionCode ?? null
+      });
+      next();
+      return;
+    }
+    try {
+      const answer = await checkRbacPermission(req.user.id, menuUrl, actionCode);
+      if (answer.allowed) {
+        next();
+        return;
+      }
+      const detail = {
+        event: "rbac.shadow_deny",
+        moduleKey,
+        menuUrl,
+        actionCode,
+        permission,
+        userId: req.user.id,
+        email: req.user.email,
+        method: req.method,
+        path: req.originalUrl,
+        menuFound: answer.menuFound,
+        actionFound: answer.actionFound
+      };
+      if (mode === "shadow") {
+        logger.warn("RBAC would have denied this request", detail);
+        void recordShadowDeny(detail);
+        next();
+        return;
+      }
+      if (!answer.menuFound || !answer.actionFound) {
+        logger.error("RBAC lookup failed \u2014 run the RBAC seed", { ...detail, event: "rbac.seed_gap" });
+      } else {
+        logger.warn("RBAC denied this request", { ...detail, event: "rbac.deny" });
+      }
+      next(
+        new AppError(
+          403,
+          ERROR_CODES.FORBIDDEN,
+          `Access denied \u2014 no '${actionCode}' permission for this module`
+        )
+      );
+    } catch (error) {
+      logger.error("RBAC module guard threw \u2014 allowing request", {
+        event: "rbac.evaluation_error",
+        moduleKey,
+        menuUrl,
+        actionCode,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      next();
+    }
+  };
+}
+function moduleGuards(moduleKey, permission) {
+  return [
+    authenticateJwt,
+    requireRole(["super_admin", "admin"]),
+    requireFeatureEnabled(moduleKey),
+    requirePermission(permission),
+    rbacModuleGuard(moduleKey, permission)
+  ];
+}
+
+// src/bootstrap/module-registry.ts
+function guardChain(route, permission) {
+  return moduleGuards(route.moduleKey, permission);
+}
+function registerModuleRoutes(app, manifests) {
+  manifests.forEach((manifest) => {
+    manifest.routes.forEach((route) => {
+      const { permission } = route;
+      if (!permission) {
+        throw new Error(`Missing permission metadata for route ${route.method.toUpperCase()} ${route.path}`);
+      }
+      app[route.method](route.path, ...guardChain(route, permission), route.handler);
+    });
+  });
+}
+
+// src/config/runtime.ts
+var IS_SERVERLESS = process.env.VERCEL === "1";
+
+// src/core/storage/file-store.ts
+var import_node_fs = __toESM(require("node:fs"), 1);
+var import_node_path = __toESM(require("node:path"), 1);
+var LOCAL_DIR = env.FILE_UPLOAD_DIR || "uploads";
+function supabaseConfig() {
+  const url = (env.SUPABASE_URL ?? "").trim().replace(/\/+$/, "");
+  const key = (env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim();
+  if (!url || !key) return null;
+  return {
+    url,
+    key,
+    bucket: (env.SUPABASE_STORAGE_BUCKET || "portfolio-uploads").trim()
+  };
+}
+function isSupabaseConfigured() {
+  return supabaseConfig() !== null;
+}
+async function putSupabase({ url, key, bucket }, body, objectKey, contentType) {
+  const endpoint = `${url}/storage/v1/object/${bucket}/${objectKey}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": contentType || "application/octet-stream",
+      // The caller already generated a unique filename, so a collision means a
+      // genuine retry of the same upload rather than two different files.
+      "x-upsert": "true",
+      "cache-control": "public, max-age=31536000, immutable"
+    },
+    body: new Uint8Array(body)
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Supabase storage upload failed (${response.status}): ${detail.slice(0, 300)}`);
+  }
+  return `${url}/storage/v1/object/public/${bucket}/${objectKey}`;
+}
+async function putLocal(body, key) {
+  const dir = import_node_path.default.join(LOCAL_DIR, import_node_path.default.dirname(key));
+  await import_node_fs.default.promises.mkdir(dir, { recursive: true });
+  const dest = import_node_path.default.join(LOCAL_DIR, key);
+  await import_node_fs.default.promises.writeFile(dest, new Uint8Array(body));
+  return `/${LOCAL_DIR}/${key}`.split(import_node_path.default.sep).join("/");
+}
+async function persistBuffer(body, filename, contentType, folder = "portfolio") {
+  const key = `${folder}/${import_node_path.default.basename(filename)}`;
+  const supabase = supabaseConfig();
+  if (supabase) return putSupabase(supabase, body, key, contentType);
+  if (IS_SERVERLESS) {
+    throw new Error(
+      "No object storage configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY \u2014 the serverless filesystem is read-only, so uploads cannot fall back to local disk."
+    );
+  }
+  return putLocal(body, key);
+}
 
 // src/middleware/error-handler.ts
 function errorHandler(err, req, res, _next) {
@@ -624,21 +1244,20 @@ function requestLogger(req, res, next) {
 
 // src/middleware/swagger.ts
 var import_bcryptjs = __toESM(require("bcryptjs"), 1);
-var import_node_fs = __toESM(require("node:fs"), 1);
-var import_node_path = __toESM(require("node:path"), 1);
+var import_node_fs2 = __toESM(require("node:fs"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
 
 // src/core/auth/user.model.ts
-var import_mongoose2 = __toESM(require("mongoose"), 1);
-var userSchema = new import_mongoose2.Schema(
+var import_mongoose8 = __toESM(require("mongoose"), 1);
+var userSchema = new import_mongoose8.Schema(
   {
     email: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true },
-    role: { type: String, enum: ["super_admin", "admin"], required: true },
-    customRoleId: { type: String, default: void 0 }
+    role: { type: String, enum: ["super_admin", "admin"], required: true }
   },
   { timestamps: true }
 );
-var UserModel = import_mongoose2.default.models.User ?? import_mongoose2.default.model("User", userSchema);
+var UserModel = import_mongoose8.default.models.User ?? import_mongoose8.default.model("User", userSchema);
 
 // src/middleware/swagger.ts
 var BASIC_REALM = 'Basic realm="Admin API Docs", charset="UTF-8"';
@@ -736,17 +1355,17 @@ async function mountSwagger(app) {
   try {
     const cwd = process.cwd();
     const candidates = [
-      import_node_path.default.resolve(cwd, "docs/api/openapi.yaml"),
-      import_node_path.default.resolve(cwd, "../docs/api/openapi.yaml"),
-      import_node_path.default.resolve(cwd, "../../docs/api/openapi.yaml")
+      import_node_path2.default.resolve(cwd, "docs/api/openapi.yaml"),
+      import_node_path2.default.resolve(cwd, "../docs/api/openapi.yaml"),
+      import_node_path2.default.resolve(cwd, "../../docs/api/openapi.yaml")
     ];
-    const specPath = candidates.find((p) => import_node_fs.default.existsSync(p));
+    const specPath = candidates.find((p) => import_node_fs2.default.existsSync(p));
     if (!specPath) {
       logger.info("Swagger UI skipped: openapi.yaml not found");
       return;
     }
     const YAML = await import("yaml");
-    const specContent = import_node_fs.default.readFileSync(specPath, "utf-8");
+    const specContent = import_node_fs2.default.readFileSync(specPath, "utf-8");
     const spec = YAML.parse(specContent);
     const gate = [];
     if (env.NODE_ENV === "production") {
@@ -773,23 +1392,13 @@ async function mountSwagger(app) {
 // src/modules/api-management/api-management.routes.ts
 var import_crypto = require("crypto");
 var import_express = require("express");
-var import_mongoose4 = __toESM(require("mongoose"), 1);
+var import_mongoose10 = __toESM(require("mongoose"), 1);
 var import_express_rate_limit = __toESM(require("express-rate-limit"), 1);
 var import_zod2 = require("zod");
 
-// src/core/http/module-guards.ts
-function moduleGuards(moduleKey, permission) {
-  return [
-    authenticateJwt,
-    requireRole(["super_admin", "admin"]),
-    requireFeatureEnabled(moduleKey),
-    requirePermission(permission)
-  ];
-}
-
 // src/modules/api-management/api-management.models.ts
-var import_mongoose3 = __toESM(require("mongoose"), 1);
-var apiAccessKeySchema = new import_mongoose3.Schema(
+var import_mongoose9 = __toESM(require("mongoose"), 1);
+var apiAccessKeySchema = new import_mongoose9.Schema(
   {
     name: { type: String, required: true, trim: true },
     description: { type: String, default: "" },
@@ -803,23 +1412,23 @@ var apiAccessKeySchema = new import_mongoose3.Schema(
     revokedByUserId: { type: String },
     lastUsedAt: { type: Date },
     expiresAt: { type: Date, index: true },
-    rotatedFromKeyId: { type: import_mongoose3.Schema.Types.ObjectId, ref: "ApiAccessKey", index: true }
+    rotatedFromKeyId: { type: import_mongoose9.Schema.Types.ObjectId, ref: "ApiAccessKey", index: true }
   },
   { timestamps: true }
 );
 apiAccessKeySchema.index({ status: 1, createdAt: -1 });
-var ApiAccessKeyModel = import_mongoose3.default.models.ApiAccessKey ?? import_mongoose3.default.model("ApiAccessKey", apiAccessKeySchema);
-var apiAccessKeyAuditEventSchema = new import_mongoose3.Schema(
+var ApiAccessKeyModel = import_mongoose9.default.models.ApiAccessKey ?? import_mongoose9.default.model("ApiAccessKey", apiAccessKeySchema);
+var apiAccessKeyAuditEventSchema = new import_mongoose9.Schema(
   {
-    keyId: { type: import_mongoose3.Schema.Types.ObjectId, ref: "ApiAccessKey", required: true, index: true },
+    keyId: { type: import_mongoose9.Schema.Types.ObjectId, ref: "ApiAccessKey", required: true, index: true },
     action: { type: String, enum: ["issued", "revoked", "regenerated"], required: true },
     actorUserId: { type: String, required: true },
-    metadata: { type: import_mongoose3.Schema.Types.Mixed, default: {} }
+    metadata: { type: import_mongoose9.Schema.Types.Mixed, default: {} }
   },
   { timestamps: true }
 );
 apiAccessKeyAuditEventSchema.index({ keyId: 1, createdAt: -1 });
-var ApiAccessKeyAuditEventModel = import_mongoose3.default.models.ApiAccessKeyAuditEvent ?? import_mongoose3.default.model("ApiAccessKeyAuditEvent", apiAccessKeyAuditEventSchema);
+var ApiAccessKeyAuditEventModel = import_mongoose9.default.models.ApiAccessKeyAuditEvent ?? import_mongoose9.default.model("ApiAccessKeyAuditEvent", apiAccessKeyAuditEventSchema);
 
 // src/modules/api-management/api-management.routes.ts
 var router = (0, import_express.Router)();
@@ -845,7 +1454,7 @@ var regenerateKeySchema = import_zod2.z.object({
   expiresAt: import_zod2.z.string().datetime().optional()
 });
 function ensureValidObjectId(id) {
-  if (!import_mongoose4.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose10.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -984,7 +1593,7 @@ router.post(
   apiManagementWriteRateLimiter,
   ...moduleGuards("api-management", "api-management.create"),
   async (req, res, next) => {
-    const session = await import_mongoose4.default.startSession();
+    const session = await import_mongoose10.default.startSession();
     try {
       ensureValidObjectId(req.params.id);
       const payload = regenerateKeySchema.parse(req.body ?? {});
@@ -1114,12 +1723,12 @@ var apiManagementRoutes = router;
 // src/modules/calendar/calendar.routes.ts
 var import_express_rate_limit2 = __toESM(require("express-rate-limit"), 1);
 var import_express2 = require("express");
-var import_mongoose6 = __toESM(require("mongoose"), 1);
+var import_mongoose12 = __toESM(require("mongoose"), 1);
 var import_zod3 = require("zod");
 
 // src/modules/calendar/calendar.models.ts
-var import_mongoose5 = __toESM(require("mongoose"), 1);
-var calendarEventSchema = new import_mongoose5.Schema(
+var import_mongoose11 = __toESM(require("mongoose"), 1);
+var calendarEventSchema = new import_mongoose11.Schema(
   {
     title: { type: String, required: true, maxlength: 300, trim: true },
     description: { type: String, maxlength: 4e3 },
@@ -1147,7 +1756,7 @@ var calendarEventSchema = new import_mongoose5.Schema(
 );
 calendarEventSchema.index({ startDate: 1, endDate: 1 });
 calendarEventSchema.index({ createdByUserId: 1, status: 1 });
-var CalendarEventModel = import_mongoose5.default.models.CalendarEvent ?? import_mongoose5.default.model("CalendarEvent", calendarEventSchema);
+var CalendarEventModel = import_mongoose11.default.models.CalendarEvent ?? import_mongoose11.default.model("CalendarEvent", calendarEventSchema);
 
 // src/modules/calendar/calendar.routes.ts
 var router2 = (0, import_express2.Router)();
@@ -1189,7 +1798,7 @@ var calendarWriteRateLimiter = (0, import_express_rate_limit2.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId2(id) {
-  if (!import_mongoose6.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose12.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -1402,12 +2011,12 @@ var calendarRoutes = router2;
 // src/modules/chat/chat.routes.ts
 var import_express_rate_limit3 = __toESM(require("express-rate-limit"), 1);
 var import_express3 = require("express");
-var import_mongoose8 = __toESM(require("mongoose"), 1);
+var import_mongoose14 = __toESM(require("mongoose"), 1);
 var import_zod4 = require("zod");
 
 // src/modules/chat/chat.models.ts
-var import_mongoose7 = __toESM(require("mongoose"), 1);
-var chatConversationSchema = new import_mongoose7.Schema(
+var import_mongoose13 = __toESM(require("mongoose"), 1);
+var chatConversationSchema = new import_mongoose13.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 200 },
     participantUserIds: {
@@ -1426,10 +2035,10 @@ var chatConversationSchema = new import_mongoose7.Schema(
   { timestamps: true }
 );
 chatConversationSchema.index({ status: 1, lastMessageAt: -1 });
-var ChatConversationModel = import_mongoose7.default.models.ChatConversation ?? import_mongoose7.default.model("ChatConversation", chatConversationSchema);
-var chatMessageSchema = new import_mongoose7.Schema(
+var ChatConversationModel = import_mongoose13.default.models.ChatConversation ?? import_mongoose13.default.model("ChatConversation", chatConversationSchema);
+var chatMessageSchema = new import_mongoose13.Schema(
   {
-    conversationId: { type: import_mongoose7.Schema.Types.ObjectId, ref: "ChatConversation", required: true, index: true },
+    conversationId: { type: import_mongoose13.Schema.Types.ObjectId, ref: "ChatConversation", required: true, index: true },
     senderUserId: { type: String, required: true },
     senderEmail: { type: String, required: true },
     content: { type: String, required: true, maxlength: 4e3 },
@@ -1438,28 +2047,7 @@ var chatMessageSchema = new import_mongoose7.Schema(
   { timestamps: true }
 );
 chatMessageSchema.index({ conversationId: 1, createdAt: -1 });
-var ChatMessageModel = import_mongoose7.default.models.ChatMessage ?? import_mongoose7.default.model("ChatMessage", chatMessageSchema);
-
-// src/modules/chat/chat-events.ts
-var clients = [];
-function addClient(client) {
-  clients.push(client);
-}
-function removeClient(res) {
-  const idx = clients.findIndex((c) => c.res === res);
-  if (idx !== -1) clients.splice(idx, 1);
-}
-function broadcastToConversation(conversationId, event, data) {
-  const payload = `event: ${event}
-data: ${JSON.stringify(data)}
-
-`;
-  for (const client of clients) {
-    if (client.conversationId === conversationId) {
-      client.res.write(payload);
-    }
-  }
-}
+var ChatMessageModel = import_mongoose13.default.models.ChatMessage ?? import_mongoose13.default.model("ChatMessage", chatMessageSchema);
 
 // src/modules/chat/chat.routes.ts
 var router3 = (0, import_express3.Router)();
@@ -1491,7 +2079,7 @@ var chatWriteRateLimiter = (0, import_express_rate_limit3.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId3(id) {
-  if (!import_mongoose8.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose14.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -1691,7 +2279,7 @@ router3.post(
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Archived conversations cannot receive new messages");
       }
       const message = await ChatMessageModel.create({
-        conversationId: new import_mongoose8.default.Types.ObjectId(req.params.id),
+        conversationId: new import_mongoose14.default.Types.ObjectId(req.params.id),
         senderUserId: req.user.id,
         senderEmail: req.user.email,
         content: payload.content.trim()
@@ -1700,7 +2288,6 @@ router3.post(
         { _id: conversation._id },
         { $inc: { messageCount: 1 }, $set: { lastMessageAt: /* @__PURE__ */ new Date() } }
       ).exec();
-      broadcastToConversation(req.params.id, "message", message.toObject());
       res.status(201).json(message.toObject());
     } catch (error) {
       if (error instanceof import_zod4.z.ZodError) {
@@ -1729,7 +2316,6 @@ router3.patch(
       message.content = payload.content.trim();
       message.editedAt = /* @__PURE__ */ new Date();
       await message.save();
-      broadcastToConversation(String(message.conversationId), "message_edited", message.toObject());
       res.json(message.toObject());
     } catch (error) {
       if (error instanceof import_zod4.z.ZodError) {
@@ -1762,7 +2348,6 @@ router3.delete(
       const conversationIdStr = String(message.conversationId);
       const deletedId = String(message._id);
       await ChatMessageModel.deleteOne({ _id: message._id }).exec();
-      broadcastToConversation(conversationIdStr, "message_deleted", { _id: deletedId });
       res.status(204).send();
     } catch (error) {
       next(error);
@@ -1793,55 +2378,17 @@ router3.get(
     }
   }
 );
-router3.get(
-  "/api/v1/chat/conversations/:id/stream",
-  (req, _res, next) => {
-    const token = req.query.token;
-    if (typeof token === "string" && token && !req.headers.authorization) {
-      req.headers.authorization = `Bearer ${token}`;
-    }
-    next();
-  },
-  ...moduleGuards("chat", "chat.read"),
-  async (req, res, next) => {
-    try {
-      ensureValidObjectId3(req.params.id);
-      const conversation = await ChatConversationModel.findById(req.params.id).lean().exec();
-      if (!conversation) {
-        throw new AppError(404, ERROR_CODES.NOT_FOUND, "Conversation not found");
-      }
-      ensureParticipantOrSuperAdmin(req, conversation.participantUserIds);
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no"
-      });
-      res.write("event: connected\ndata: {}\n\n");
-      addClient({ res, userId: req.user.id, conversationId: req.params.id });
-      const heartbeat = setInterval(() => {
-        res.write(": heartbeat\n\n");
-      }, 3e4);
-      req.on("close", () => {
-        clearInterval(heartbeat);
-        removeClient(res);
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
 var chatRoutes = router3;
 
 // src/modules/crm/crm.routes.ts
 var import_express4 = require("express");
-var import_mongoose10 = __toESM(require("mongoose"), 1);
+var import_mongoose16 = __toESM(require("mongoose"), 1);
 var import_express_rate_limit4 = __toESM(require("express-rate-limit"), 1);
 var import_zod5 = require("zod");
 
 // src/modules/crm/crm.models.ts
-var import_mongoose9 = __toESM(require("mongoose"), 1);
-var crmContactSchema = new import_mongoose9.Schema(
+var import_mongoose15 = __toESM(require("mongoose"), 1);
+var crmContactSchema = new import_mongoose15.Schema(
   {
     displayName: { type: String, required: true, trim: true },
     primaryEmail: { type: String, lowercase: true },
@@ -1854,8 +2401,8 @@ var crmContactSchema = new import_mongoose9.Schema(
   { timestamps: true }
 );
 crmContactSchema.index({ primaryEmail: 1 });
-var CrmContactModel = import_mongoose9.default.models.CrmContact ?? import_mongoose9.default.model("CrmContact", crmContactSchema);
-var pipelineStageSchema = new import_mongoose9.Schema(
+var CrmContactModel = import_mongoose15.default.models.CrmContact ?? import_mongoose15.default.model("CrmContact", crmContactSchema);
+var pipelineStageSchema = new import_mongoose15.Schema(
   {
     key: { type: String, required: true },
     label: { type: String, required: true },
@@ -1865,7 +2412,7 @@ var pipelineStageSchema = new import_mongoose9.Schema(
   },
   { _id: false }
 );
-var crmPipelineSchema = new import_mongoose9.Schema(
+var crmPipelineSchema = new import_mongoose15.Schema(
   {
     name: { type: String, required: true },
     isDefault: { type: Boolean, default: false },
@@ -1873,12 +2420,12 @@ var crmPipelineSchema = new import_mongoose9.Schema(
   },
   { timestamps: true }
 );
-var CrmPipelineModel = import_mongoose9.default.models.CrmPipeline ?? import_mongoose9.default.model("CrmPipeline", crmPipelineSchema);
-var crmDealSchema = new import_mongoose9.Schema(
+var CrmPipelineModel = import_mongoose15.default.models.CrmPipeline ?? import_mongoose15.default.model("CrmPipeline", crmPipelineSchema);
+var crmDealSchema = new import_mongoose15.Schema(
   {
     title: { type: String, required: true },
-    contactId: { type: import_mongoose9.Schema.Types.ObjectId, ref: "CrmContact", required: true, index: true },
-    pipelineId: { type: import_mongoose9.Schema.Types.ObjectId, ref: "CrmPipeline", required: true, index: true },
+    contactId: { type: import_mongoose15.Schema.Types.ObjectId, ref: "CrmContact", required: true, index: true },
+    pipelineId: { type: import_mongoose15.Schema.Types.ObjectId, ref: "CrmPipeline", required: true, index: true },
     stageKey: { type: String, required: true },
     amountValue: { type: Number, required: true, min: 0, default: 0 },
     currency: { type: String, required: true, default: "USD" },
@@ -1890,7 +2437,7 @@ var crmDealSchema = new import_mongoose9.Schema(
   { timestamps: true }
 );
 crmDealSchema.index({ pipelineId: 1, stageKey: 1 });
-var CrmDealModel = import_mongoose9.default.models.CrmDeal ?? import_mongoose9.default.model("CrmDeal", crmDealSchema);
+var CrmDealModel = import_mongoose15.default.models.CrmDeal ?? import_mongoose15.default.model("CrmDeal", crmDealSchema);
 
 // src/modules/crm/crm.routes.ts
 var router4 = (0, import_express4.Router)();
@@ -1938,7 +2485,7 @@ var stageTransitionSchema = import_zod5.z.object({
   lostReason: import_zod5.z.string().optional()
 });
 function ensureValidObjectId4(id) {
-  if (!import_mongoose10.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose16.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -2077,8 +2624,8 @@ router4.post("/api/v1/crm/deals", crmWriteRateLimiter, ...moduleGuards("crm", "c
     }
     const created = await CrmDealModel.create({
       ...payload,
-      contactId: new import_mongoose10.default.Types.ObjectId(payload.contactId),
-      pipelineId: new import_mongoose10.default.Types.ObjectId(payload.pipelineId),
+      contactId: new import_mongoose16.default.Types.ObjectId(payload.contactId),
+      pipelineId: new import_mongoose16.default.Types.ObjectId(payload.pipelineId),
       expectedCloseDate: payload.expectedCloseDate ? new Date(payload.expectedCloseDate) : void 0,
       status: deriveDealStatus(stage)
     });
@@ -2187,22 +2734,22 @@ var PAYMENT_PROVIDER_KEYS = ["stripe", "paypal", "razorpay"];
 
 // src/modules/ecommerce/ecommerce.payment.service.ts
 var import_crypto3 = __toESM(require("crypto"), 1);
-var import_mongoose13 = __toESM(require("mongoose"), 1);
+var import_mongoose19 = __toESM(require("mongoose"), 1);
 
 // src/core/payments/payment.models.ts
-var import_mongoose11 = __toESM(require("mongoose"), 1);
-var paymentIdempotencySchema = new import_mongoose11.Schema(
+var import_mongoose17 = __toESM(require("mongoose"), 1);
+var paymentIdempotencySchema = new import_mongoose17.Schema(
   {
     key: { type: String, required: true, unique: true, index: true },
     provider: { type: String, enum: ["stripe", "paypal", "razorpay"], required: true },
-    orderId: { type: import_mongoose11.Schema.Types.ObjectId, required: true, ref: "EcommerceOrder" },
+    orderId: { type: import_mongoose17.Schema.Types.ObjectId, required: true, ref: "EcommerceOrder" },
     requestHash: { type: String, required: true },
-    responsePayload: { type: import_mongoose11.Schema.Types.Mixed, required: true }
+    responsePayload: { type: import_mongoose17.Schema.Types.Mixed, required: true }
   },
   { timestamps: true }
 );
-var PaymentIdempotencyModel = import_mongoose11.default.models.PaymentIdempotency ?? import_mongoose11.default.model("PaymentIdempotency", paymentIdempotencySchema);
-var paymentWebhookEventSchema = new import_mongoose11.Schema(
+var PaymentIdempotencyModel = import_mongoose17.default.models.PaymentIdempotency ?? import_mongoose17.default.model("PaymentIdempotency", paymentIdempotencySchema);
+var paymentWebhookEventSchema = new import_mongoose17.Schema(
   {
     provider: { type: String, enum: ["stripe", "paypal", "razorpay"], required: true },
     eventId: { type: String, required: true },
@@ -2212,7 +2759,7 @@ var paymentWebhookEventSchema = new import_mongoose11.Schema(
   { timestamps: true }
 );
 paymentWebhookEventSchema.index({ provider: 1, eventId: 1 }, { unique: true });
-var PaymentWebhookEventModel = import_mongoose11.default.models.PaymentWebhookEvent ?? import_mongoose11.default.model("PaymentWebhookEvent", paymentWebhookEventSchema);
+var PaymentWebhookEventModel = import_mongoose17.default.models.PaymentWebhookEvent ?? import_mongoose17.default.model("PaymentWebhookEvent", paymentWebhookEventSchema);
 
 // src/core/payments/payment.providers.ts
 var crc32 = __toESM(require("buffer-crc32"), 1);
@@ -2891,8 +3438,8 @@ function hashRawPayload(rawBody) {
 }
 
 // src/modules/ecommerce/ecommerce.models.ts
-var import_mongoose12 = __toESM(require("mongoose"), 1);
-var ecommerceProductSchema = new import_mongoose12.Schema(
+var import_mongoose18 = __toESM(require("mongoose"), 1);
+var ecommerceProductSchema = new import_mongoose18.Schema(
   {
     title: { type: String, required: true, trim: true },
     sku: { type: String, required: true, unique: true, trim: true },
@@ -2904,10 +3451,10 @@ var ecommerceProductSchema = new import_mongoose12.Schema(
   },
   { timestamps: true }
 );
-var EcommerceProductModel = import_mongoose12.default.models.EcommerceProduct ?? import_mongoose12.default.model("EcommerceProduct", ecommerceProductSchema);
-var ecommerceOrderLineSchema = new import_mongoose12.Schema(
+var EcommerceProductModel = import_mongoose18.default.models.EcommerceProduct ?? import_mongoose18.default.model("EcommerceProduct", ecommerceProductSchema);
+var ecommerceOrderLineSchema = new import_mongoose18.Schema(
   {
-    productId: { type: import_mongoose12.Schema.Types.ObjectId, ref: "EcommerceProduct", required: true },
+    productId: { type: import_mongoose18.Schema.Types.ObjectId, ref: "EcommerceProduct", required: true },
     title: { type: String, required: true },
     sku: { type: String, required: true },
     qty: { type: Number, required: true, min: 1 },
@@ -2916,7 +3463,7 @@ var ecommerceOrderLineSchema = new import_mongoose12.Schema(
   },
   { _id: false }
 );
-var ecommerceOrderSchema = new import_mongoose12.Schema(
+var ecommerceOrderSchema = new import_mongoose18.Schema(
   {
     orderNumber: { type: String, required: true, unique: true },
     customerName: { type: String, required: true },
@@ -2957,11 +3504,11 @@ var ecommerceOrderSchema = new import_mongoose12.Schema(
 ecommerceOrderSchema.index({ status: 1, createdAt: -1 });
 ecommerceOrderSchema.index({ "payment.providerOrderId": 1 });
 ecommerceOrderSchema.index({ "payment.providerPaymentId": 1 });
-var EcommerceOrderModel = import_mongoose12.default.models.EcommerceOrder ?? import_mongoose12.default.model("EcommerceOrder", ecommerceOrderSchema);
+var EcommerceOrderModel = import_mongoose18.default.models.EcommerceOrder ?? import_mongoose18.default.model("EcommerceOrder", ecommerceOrderSchema);
 
 // src/modules/ecommerce/ecommerce.payment.service.ts
 function ensureValidObjectId5(id) {
-  if (!import_mongoose13.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose19.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -3081,7 +3628,7 @@ async function processPaymentWebhook(provider, rawBody, headers) {
       eventId: normalizedEvent.eventId
     };
   }
-  let order = normalizedEvent.orderId && import_mongoose13.default.Types.ObjectId.isValid(normalizedEvent.orderId) ? await EcommerceOrderModel.findById(normalizedEvent.orderId).exec() : null;
+  let order = normalizedEvent.orderId && import_mongoose19.default.Types.ObjectId.isValid(normalizedEvent.orderId) ? await EcommerceOrderModel.findById(normalizedEvent.orderId).exec() : null;
   if (!order && normalizedEvent.providerOrderId) {
     order = await EcommerceOrderModel.findOne({ "payment.providerOrderId": normalizedEvent.providerOrderId }).exec();
   }
@@ -3268,7 +3815,7 @@ paymentWebhookRoutes.post(
 
 // src/modules/ecommerce/ecommerce.routes.ts
 var import_express6 = require("express");
-var import_mongoose14 = __toESM(require("mongoose"), 1);
+var import_mongoose20 = __toESM(require("mongoose"), 1);
 var import_express_rate_limit6 = __toESM(require("express-rate-limit"), 1);
 var import_zod7 = require("zod");
 var router5 = (0, import_express6.Router)();
@@ -3304,7 +3851,7 @@ var transitionPayloadSchema = import_zod7.z.object({
   to: import_zod7.z.enum(["open", "paid", "shipped", "completed", "cancelled", "refunded"])
 });
 function ensureValidObjectId6(id) {
-  if (!import_mongoose14.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose20.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -3394,7 +3941,7 @@ router5.get("/api/v1/ecommerce/orders", ...moduleGuards("ecommerce", "ecommerce.
   }
 });
 router5.post("/api/v1/ecommerce/orders", ecommerceWriteRateLimiter, ...moduleGuards("ecommerce", "ecommerce.create"), async (req, res, next) => {
-  const session = await import_mongoose14.default.startSession();
+  const session = await import_mongoose20.default.startSession();
   try {
     const payload = orderPayloadSchema.parse(req.body ?? {});
     let createdOrder = null;
@@ -3469,7 +4016,7 @@ router5.post(
   ecommerceWriteRateLimiter,
   ...moduleGuards("ecommerce", "ecommerce.update"),
   async (req, res, next) => {
-    const session = await import_mongoose14.default.startSession();
+    const session = await import_mongoose20.default.startSession();
     try {
       ensureValidObjectId6(req.params.id);
       const { to } = transitionPayloadSchema.parse(req.body ?? {});
@@ -3534,22 +4081,22 @@ router5.get("/api/v1/ecommerce/insights", ...moduleGuards("ecommerce", "ecommerc
 var ecommerceRoutes = router5;
 
 // src/modules/file-manager/file-manager.routes.ts
-var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
+var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
 var import_node_util = require("node:util");
 var import_express_rate_limit7 = __toESM(require("express-rate-limit"), 1);
 var import_express7 = require("express");
-var import_mongoose16 = __toESM(require("mongoose"), 1);
+var import_mongoose22 = __toESM(require("mongoose"), 1);
 var import_multer = __toESM(require("multer"), 1);
 var import_zod8 = require("zod");
 
 // src/modules/file-manager/file-manager.models.ts
-var import_mongoose15 = __toESM(require("mongoose"), 1);
-var fileManagerEntrySchema = new import_mongoose15.Schema(
+var import_mongoose21 = __toESM(require("mongoose"), 1);
+var fileManagerEntrySchema = new import_mongoose21.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 200 },
     kind: { type: String, enum: ["folder", "file"], required: true, index: true },
-    parentId: { type: import_mongoose15.Schema.Types.ObjectId, ref: "FileManagerEntry", default: null, index: true },
+    parentId: { type: import_mongoose21.Schema.Types.ObjectId, ref: "FileManagerEntry", default: null, index: true },
     sizeBytes: { type: Number, min: 0 },
     mimeType: { type: String, trim: true, maxlength: 180 },
     extension: { type: String, trim: true, maxlength: 24 },
@@ -3572,36 +4119,37 @@ fileManagerEntrySchema.index(
   }
 );
 fileManagerEntrySchema.index({ parentId: 1, status: 1, kind: 1, createdAt: -1 });
-var FileManagerEntryModel = import_mongoose15.default.models.FileManagerEntry ?? import_mongoose15.default.model("FileManagerEntry", fileManagerEntrySchema);
+var FileManagerEntryModel = import_mongoose21.default.models.FileManagerEntry ?? import_mongoose21.default.model("FileManagerEntry", fileManagerEntrySchema);
 
 // src/modules/file-manager/storage-adapter.ts
-var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
 var import_node_crypto2 = __toESM(require("node:crypto"), 1);
-var UPLOAD_DIR = import_node_path2.default.resolve(env.FILE_UPLOAD_DIR ?? "uploads");
+var import_node_stream = require("node:stream");
+var UPLOAD_DIR = import_node_path3.default.resolve(env.FILE_UPLOAD_DIR ?? "uploads");
 function ensureDir(dir) {
-  if (!import_node_fs2.default.existsSync(dir)) {
-    import_node_fs2.default.mkdirSync(dir, { recursive: true });
+  if (!import_node_fs3.default.existsSync(dir)) {
+    import_node_fs3.default.mkdirSync(dir, { recursive: true });
   }
 }
 var LocalStorageAdapter = class {
-  async store(key, localFilePath) {
-    const dest = import_node_path2.default.join(UPLOAD_DIR, key);
-    ensureDir(import_node_path2.default.dirname(dest));
-    import_node_fs2.default.renameSync(localFilePath, dest);
+  async store(key, body) {
+    const dest = import_node_path3.default.join(UPLOAD_DIR, key);
+    ensureDir(import_node_path3.default.dirname(dest));
+    import_node_fs3.default.writeFileSync(dest, new Uint8Array(body));
     return key;
   }
   async retrieve(key) {
-    const absPath = import_node_path2.default.join(UPLOAD_DIR, key);
-    if (!import_node_fs2.default.existsSync(absPath)) {
+    const absPath = import_node_path3.default.join(UPLOAD_DIR, key);
+    if (!import_node_fs3.default.existsSync(absPath)) {
       throw new Error(`File not found on disk: ${key}`);
     }
-    return import_node_fs2.default.createReadStream(absPath);
+    return import_node_fs3.default.createReadStream(absPath);
   }
   async delete(key) {
-    const absPath = import_node_path2.default.join(UPLOAD_DIR, key);
-    if (import_node_fs2.default.existsSync(absPath)) {
-      import_node_fs2.default.unlinkSync(absPath);
+    const absPath = import_node_path3.default.join(UPLOAD_DIR, key);
+    if (import_node_fs3.default.existsSync(absPath)) {
+      import_node_fs3.default.unlinkSync(absPath);
     }
   }
   async getDownloadUrl(_key, _filename) {
@@ -3635,16 +4183,12 @@ var S3StorageAdapter = class {
     }
     return new S3Client(config2);
   }
-  async store(key, localFilePath) {
+  async store(key, body) {
     const { PutObjectCommand } = await import("@aws-sdk/client-s3");
     const client = await this.clientPromise;
-    const body = import_node_fs2.default.createReadStream(localFilePath);
     await client.send(
       new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: body })
     );
-    if (import_node_fs2.default.existsSync(localFilePath)) {
-      import_node_fs2.default.unlinkSync(localFilePath);
-    }
     logger.info("S3 upload complete", { bucket: this.bucket, key });
     return key;
   }
@@ -3678,10 +4222,69 @@ var S3StorageAdapter = class {
     return getSignedUrl(client, command, { expiresIn: 3600 });
   }
 };
+var SupabaseStorageAdapter = class {
+  url;
+  key;
+  bucket;
+  prefix = "file-manager";
+  constructor() {
+    const config2 = supabaseConfig();
+    if (!config2) {
+      throw new Error(
+        "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required when STORAGE_BACKEND=supabase"
+      );
+    }
+    this.url = config2.url;
+    this.key = config2.key;
+    this.bucket = config2.bucket;
+  }
+  objectUrl(key) {
+    return `${this.url}/storage/v1/object/${this.bucket}/${this.prefix}/${key}`;
+  }
+  async store(key, body) {
+    const response = await fetch(this.objectUrl(key), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.key}`,
+        "Content-Type": "application/octet-stream",
+        "x-upsert": "true"
+      },
+      body: new Uint8Array(body)
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Supabase upload failed (${response.status}): ${detail.slice(0, 300)}`);
+    }
+    logger.info("Supabase upload complete", { bucket: this.bucket, key });
+    return key;
+  }
+  async retrieve(key) {
+    const response = await fetch(this.objectUrl(key), {
+      headers: { Authorization: `Bearer ${this.key}` }
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Supabase object not found: ${key} (HTTP ${response.status})`);
+    }
+    return import_node_stream.Readable.fromWeb(response.body);
+  }
+  async delete(key) {
+    const response = await fetch(this.objectUrl(key), {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${this.key}` }
+    });
+    if (!response.ok && response.status !== 404) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(`Supabase delete failed (${response.status}): ${detail.slice(0, 300)}`);
+    }
+  }
+  async getDownloadUrl(_key, _filename) {
+    return null;
+  }
+};
 function generateStorageKey(userId, originalName) {
   const datePart = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10).replace(/-/g, "");
   const hash = import_node_crypto2.default.randomBytes(8).toString("hex");
-  const ext = import_node_path2.default.extname(originalName);
+  const ext = import_node_path3.default.extname(originalName);
   return `${userId}/${datePart}_${hash}${ext}`;
 }
 var _adapter;
@@ -3691,6 +4294,9 @@ function getStorageAdapter() {
   if (backend === "s3") {
     _adapter = new S3StorageAdapter();
     logger.info("Storage backend: S3", { bucket: env.S3_BUCKET });
+  } else if (backend === "supabase") {
+    _adapter = new SupabaseStorageAdapter();
+    logger.info("Storage backend: Supabase", { bucket: env.SUPABASE_STORAGE_BUCKET });
   } else {
     _adapter = new LocalStorageAdapter();
     logger.info("Storage backend: local", { dir: UPLOAD_DIR });
@@ -3707,7 +4313,7 @@ async function scanFile(filePath) {
 }
 
 // src/modules/file-manager/quota.service.ts
-var DEFAULT_QUOTA_BYTES = 500 * 1024 * 1024;
+var DEFAULT_QUOTA_BYTES = env.FILE_QUOTA_BYTES;
 async function getUserStorageUsed(userId) {
   const result = await FileManagerEntryModel.aggregate([
     { $match: { createdByUserId: userId, kind: "file", status: "active" } },
@@ -3774,7 +4380,7 @@ function parseNullableObjectId(value, fieldLabel) {
   if (!isStrictObjectId(value)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, `Invalid ${fieldLabel}`);
   }
-  return new import_mongoose16.default.Types.ObjectId(value);
+  return new import_mongoose22.default.Types.ObjectId(value);
 }
 function extractExtension(name) {
   const dotIndex = name.lastIndexOf(".");
@@ -3819,9 +4425,9 @@ var MAGIC_SIGNATURES = [
   { mime: "audio/ogg", offset: 0, bytes: [79, 103, 103, 83] }
 ];
 var MAGIC_BUFFER_SIZE = 16;
-var fsOpen = (0, import_node_util.promisify)(import_node_fs3.default.open);
-var fsRead = (0, import_node_util.promisify)(import_node_fs3.default.read);
-var fsClose = (0, import_node_util.promisify)(import_node_fs3.default.close);
+var fsOpen = (0, import_node_util.promisify)(import_node_fs4.default.open);
+var fsRead = (0, import_node_util.promisify)(import_node_fs4.default.read);
+var fsClose = (0, import_node_util.promisify)(import_node_fs4.default.close);
 async function detectMimeFromFile(filePath) {
   let fd;
   try {
@@ -3849,7 +4455,7 @@ function mimeMatchesDetected(declared, detected) {
   return (MIME_ALIAS[detected] ?? []).includes(declared);
 }
 var upload = (0, import_multer.default)({
-  dest: import_node_path3.default.resolve(env.FILE_UPLOAD_DIR ?? "uploads", "_tmp"),
+  dest: import_node_path4.default.resolve(env.FILE_UPLOAD_DIR ?? "uploads", "_tmp"),
   limits: { fileSize: env.FILE_UPLOAD_MAX_BYTES },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
@@ -3922,7 +4528,8 @@ router6.get(
       const parentId = parseNullableObjectId(query.parentId, "parentId");
       const skip = (query.page - 1) * query.limit;
       const filter = {
-        parentId
+        parentId,
+        createdByUserId: req.user.id
       };
       if (query.status !== "all") {
         filter.status = query.status;
@@ -4034,7 +4641,7 @@ router6.patch(
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
       const payload = updateEntrySchema.parse(req.body ?? {});
-      const existing = await FileManagerEntryModel.findById(req.params.id).exec();
+      const existing = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user.id }).exec();
       if (!existing) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -4083,7 +4690,7 @@ router6.post(
       }
       const payload = moveEntrySchema.parse(req.body ?? {});
       const targetParentId = parseNullableObjectId(payload.targetParentId, "targetParentId");
-      const entry = await FileManagerEntryModel.findById(req.params.id).exec();
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user.id }).exec();
       if (!entry) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -4117,7 +4724,7 @@ router6.post(
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
       const payload = transitionEntrySchema.parse(req.body ?? {});
-      const entry = await FileManagerEntryModel.findById(req.params.id).exec();
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user.id }).exec();
       if (!entry) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -4154,7 +4761,7 @@ router6.delete(
       if (!isStrictObjectId(req.params.id)) {
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
-      const entry = await FileManagerEntryModel.findById(req.params.id).exec();
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user.id }).exec();
       if (!entry) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File manager entry not found");
       }
@@ -4228,12 +4835,12 @@ router6.post(
       }
       const detectedMime = await detectMimeFromFile(file.path);
       if (!mimeMatchesDetected(file.mimetype, detectedMime)) {
-        import_node_fs3.default.unlinkSync(file.path);
+        import_node_fs4.default.unlinkSync(file.path);
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "File content does not match declared type");
       }
       const quota = await checkQuota(req.user.id, file.size);
       if (!quota.allowed) {
-        import_node_fs3.default.unlinkSync(file.path);
+        import_node_fs4.default.unlinkSync(file.path);
         throw new AppError(
           400,
           ERROR_CODES.BAD_REQUEST,
@@ -4245,12 +4852,12 @@ router6.post(
       if (parentId) await ensureParentFolderExists(parentId);
       const scanResult = await scanFile(file.path);
       if (scanResult === "infected") {
-        import_node_fs3.default.unlinkSync(file.path);
+        import_node_fs4.default.unlinkSync(file.path);
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "File rejected by virus scanner");
       }
       const storageKey = generateStorageKey(req.user.id, file.originalname);
       const adapter = getStorageAdapter();
-      const storagePath = await adapter.store(storageKey, file.path);
+      const storagePath = await adapter.store(storageKey, file.buffer);
       const originalName = file.originalname;
       const created = await FileManagerEntryModel.create({
         name: originalName,
@@ -4269,8 +4876,8 @@ router6.post(
       });
       res.status(201).json(toFileManagerEntry(created.toObject()));
     } catch (error) {
-      if (req.file && import_node_fs3.default.existsSync(req.file.path)) {
-        import_node_fs3.default.unlinkSync(req.file.path);
+      if (req.file && import_node_fs4.default.existsSync(req.file.path)) {
+        import_node_fs4.default.unlinkSync(req.file.path);
       }
       if (typeof error === "object" && error !== null && error.code === 11e3) {
         next(new AppError(400, ERROR_CODES.BAD_REQUEST, "A file with this name already exists"));
@@ -4288,7 +4895,7 @@ router6.get(
       if (!isStrictObjectId(req.params.id)) {
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid entry id");
       }
-      const entry = await FileManagerEntryModel.findById(req.params.id).lean().exec();
+      const entry = await FileManagerEntryModel.findOne({ _id: req.params.id, createdByUserId: req.user.id }).lean().exec();
       if (!entry || entry.kind !== "file") {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "File not found");
       }
@@ -4341,12 +4948,12 @@ var fileManagerRoutes = router6;
 // src/modules/job/job.routes.ts
 var import_express_rate_limit8 = __toESM(require("express-rate-limit"), 1);
 var import_express8 = require("express");
-var import_mongoose18 = __toESM(require("mongoose"), 1);
+var import_mongoose24 = __toESM(require("mongoose"), 1);
 var import_zod9 = require("zod");
 
 // src/modules/job/job.models.ts
-var import_mongoose17 = __toESM(require("mongoose"), 1);
-var jobPostingSchema = new import_mongoose17.Schema(
+var import_mongoose23 = __toESM(require("mongoose"), 1);
+var jobPostingSchema = new import_mongoose23.Schema(
   {
     title: { type: String, required: true, maxlength: 300, trim: true },
     description: { type: String, required: true, maxlength: 1e4 },
@@ -4379,10 +4986,10 @@ var jobPostingSchema = new import_mongoose17.Schema(
   { timestamps: true }
 );
 jobPostingSchema.index({ status: 1, createdAt: -1 });
-var JobPostingModel = import_mongoose17.default.models.JobPosting ?? import_mongoose17.default.model("JobPosting", jobPostingSchema);
-var jobApplicationSchema = new import_mongoose17.Schema(
+var JobPostingModel = import_mongoose23.default.models.JobPosting ?? import_mongoose23.default.model("JobPosting", jobPostingSchema);
+var jobApplicationSchema = new import_mongoose23.Schema(
   {
-    jobId: { type: import_mongoose17.Schema.Types.ObjectId, ref: "JobPosting", required: true, index: true },
+    jobId: { type: import_mongoose23.Schema.Types.ObjectId, ref: "JobPosting", required: true, index: true },
     applicantName: { type: String, required: true, maxlength: 200, trim: true },
     applicantEmail: { type: String, required: true, lowercase: true, trim: true },
     resumeUrl: { type: String, maxlength: 2e3 },
@@ -4400,7 +5007,7 @@ var jobApplicationSchema = new import_mongoose17.Schema(
 );
 jobApplicationSchema.index({ jobId: 1, status: 1 });
 jobApplicationSchema.index({ jobId: 1, applicantEmail: 1 }, { unique: true });
-var JobApplicationModel = import_mongoose17.default.models.JobApplication ?? import_mongoose17.default.model("JobApplication", jobApplicationSchema);
+var JobApplicationModel = import_mongoose23.default.models.JobApplication ?? import_mongoose23.default.model("JobApplication", jobApplicationSchema);
 
 // src/modules/job/job.routes.ts
 var router7 = (0, import_express8.Router)();
@@ -4462,7 +5069,7 @@ var applicationSubmitRateLimiter = (0, import_express_rate_limit8.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId7(id) {
-  if (!import_mongoose18.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose24.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -4834,12 +5441,12 @@ var jobRoutes = router7;
 // src/modules/mailbox/mailbox.routes.ts
 var import_express_rate_limit9 = __toESM(require("express-rate-limit"), 1);
 var import_express9 = require("express");
-var import_mongoose20 = __toESM(require("mongoose"), 1);
+var import_mongoose26 = __toESM(require("mongoose"), 1);
 var import_zod10 = require("zod");
 
 // src/modules/mailbox/mailbox.models.ts
-var import_mongoose19 = __toESM(require("mongoose"), 1);
-var mailboxMessageSchema = new import_mongoose19.Schema(
+var import_mongoose25 = __toESM(require("mongoose"), 1);
+var mailboxMessageSchema = new import_mongoose25.Schema(
   {
     subject: { type: String, required: true, trim: true, maxlength: 300 },
     body: { type: String, required: true, maxlength: 5e4 },
@@ -4869,14 +5476,14 @@ var mailboxMessageSchema = new import_mongoose19.Schema(
       default: []
     },
     externalMessageId: { type: String },
-    inReplyToId: { type: import_mongoose19.Schema.Types.ObjectId, ref: "MailboxMessage" },
+    inReplyToId: { type: import_mongoose25.Schema.Types.ObjectId, ref: "MailboxMessage" },
     ownerUserId: { type: String, required: true, index: true },
     sentAt: { type: Date }
   },
   { timestamps: true }
 );
 mailboxMessageSchema.index({ ownerUserId: 1, folder: 1, createdAt: -1 });
-var MailboxMessageModel = import_mongoose19.default.models.MailboxMessage ?? import_mongoose19.default.model("MailboxMessage", mailboxMessageSchema);
+var MailboxMessageModel = import_mongoose25.default.models.MailboxMessage ?? import_mongoose25.default.model("MailboxMessage", mailboxMessageSchema);
 
 // src/modules/mailbox/mail-adapter.ts
 var import_nodemailer = __toESM(require("nodemailer"), 1);
@@ -4898,7 +5505,7 @@ function getTransporter() {
   return transporter;
 }
 async function sendMail(envelope) {
-  const transport = getTransporter();
+  const transport2 = getTransporter();
   const recipientCount = envelope.to.length + (envelope.cc?.length ?? 0) + (envelope.bcc?.length ?? 0);
   logger.info("Mail delivery attempt", {
     to: envelope.to,
@@ -4908,7 +5515,7 @@ async function sendMail(envelope) {
     hasAttachments: (envelope.attachments?.length ?? 0) > 0
   });
   try {
-    const info = await transport.sendMail({
+    const info = await transport2.sendMail({
       from: `"${envelope.from.name}" <${envelope.from.address}>`,
       to: envelope.to.join(", "),
       cc: envelope.cc?.join(", "),
@@ -5000,7 +5607,7 @@ var mailboxWriteRateLimiter = (0, import_express_rate_limit9.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId8(id) {
-  if (!import_mongoose20.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose26.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -5044,7 +5651,7 @@ router8.post(
       let inReplyToObjectId = void 0;
       if (payload.inReplyToId) {
         ensureValidObjectId8(payload.inReplyToId);
-        inReplyToObjectId = new import_mongoose20.default.Types.ObjectId(payload.inReplyToId);
+        inReplyToObjectId = new import_mongoose26.default.Types.ObjectId(payload.inReplyToId);
       }
       const message = await MailboxMessageModel.create({
         subject: payload.subject.trim(),
@@ -5334,93 +5941,62 @@ var import_express10 = require("express");
 var import_express_rate_limit10 = __toESM(require("express-rate-limit"), 1);
 var import_zod11 = require("zod");
 
-// src/modules/rbac/employee.model.ts
-var import_mongoose21 = __toESM(require("mongoose"), 1);
-var employeeSchema = new import_mongoose21.Schema(
-  {
-    clientCode: { type: String, required: true },
-    userId: { type: import_mongoose21.Schema.Types.ObjectId, ref: "User", required: true, unique: true },
-    employeeName: { type: String, required: true, maxlength: 100 },
-    emailOffice: { type: String, required: true },
-    department: { type: String, maxlength: 100, default: "" },
-    contact: { type: String, maxlength: 20, default: "" },
-    roleId: { type: import_mongoose21.Schema.Types.ObjectId, ref: "RoleMaster", default: null },
-    parentEmployeeId: { type: import_mongoose21.Schema.Types.ObjectId, ref: "Employee", default: null },
-    ancestorIds: { type: [import_mongoose21.Schema.Types.ObjectId], default: [] },
-    isActive: { type: Boolean, required: true, default: true },
-    createdBy: { type: String, default: null },
-    updatedBy: { type: String, required: true }
-  },
-  { timestamps: true }
-);
-employeeSchema.index({ clientCode: 1 });
-employeeSchema.index({ ancestorIds: 1 });
-employeeSchema.index({ clientCode: 1, emailOffice: 1 });
-var EmployeeModel = import_mongoose21.default.models.Employee ?? import_mongoose21.default.model("Employee", employeeSchema);
-
-// src/modules/rbac/role-master.model.ts
-var import_mongoose22 = __toESM(require("mongoose"), 1);
-var rolePermissionSchema = new import_mongoose22.Schema(
-  {
-    menuId: { type: String, required: true },
-    actionTypeId: { type: String, required: true },
-    granted: { type: Boolean, required: true, default: false }
-  },
-  { _id: false }
-);
-var roleMasterSchema = new import_mongoose22.Schema(
-  {
-    clientCode: { type: String, required: true },
-    roleName: { type: String, required: true, maxlength: 60 },
-    permissions: { type: [rolePermissionSchema], default: [] },
-    isActive: { type: Boolean, required: true, default: true },
-    createdBy: { type: String, default: null },
-    updatedBy: { type: String, required: true }
-  },
-  { timestamps: true }
-);
-roleMasterSchema.index({ clientCode: 1, roleName: 1 }, { unique: true });
-var RoleMasterModel = import_mongoose22.default.models.RoleMaster ?? import_mongoose22.default.model("RoleMaster", roleMasterSchema);
-
-// src/modules/rbac/menu-master.model.ts
-var import_mongoose23 = __toESM(require("mongoose"), 1);
-var menuMasterSchema = new import_mongoose23.Schema(
-  {
-    clientCode: { type: String, required: true },
-    menuName: { type: String, required: true, maxlength: 100 },
-    isRoot: { type: Boolean, required: true, default: true },
-    isParentMenu: { type: Boolean, required: true, default: false },
-    parentMenu: {
-      type: import_mongoose23.Schema.Types.ObjectId,
-      ref: "MenuMaster",
-      default: null
-    },
-    menuUrl: { type: String, required: true, maxlength: 255 },
-    sequence: { type: Number, required: true, default: 0 },
-    icon: { type: String, maxlength: 100, default: "" },
-    isActive: { type: Boolean, required: true, default: true },
-    createdBy: { type: String, default: null },
-    updatedBy: { type: String, required: true }
-  },
-  { timestamps: true }
-);
-menuMasterSchema.index({ clientCode: 1, menuUrl: 1 }, { unique: true });
-menuMasterSchema.index({ clientCode: 1, isRoot: 1, sequence: 1 });
-var MenuMasterModel = import_mongoose23.default.models.MenuMaster ?? import_mongoose23.default.model("MenuMaster", menuMasterSchema);
-
-// src/modules/rbac/action-type.model.ts
-var import_mongoose24 = __toESM(require("mongoose"), 1);
-var actionTypeSchema = new import_mongoose24.Schema(
-  {
-    clientCode: { type: String, required: true },
-    actionName: { type: String, required: true, maxlength: 60 },
-    actionCode: { type: String, required: true, maxlength: 30 },
-    isActive: { type: Boolean, required: true, default: true }
-  },
-  { timestamps: true }
-);
-actionTypeSchema.index({ clientCode: 1, actionCode: 1 }, { unique: true });
-var ActionTypeModel = import_mongoose24.default.models.ActionType ?? import_mongoose24.default.model("ActionType", actionTypeSchema);
+// src/core/http/mongo-rate-limit-store.ts
+var import_mongoose27 = __toESM(require("mongoose"), 1);
+var COLLECTION = "ratelimits";
+var indexReady = null;
+function ensureIndex() {
+  if (!indexReady) {
+    indexReady = import_mongoose27.default.connection.collection(COLLECTION).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).then(() => void 0).catch((error) => {
+      logger.warn("Could not create rate-limit TTL index", { error });
+      indexReady = null;
+    });
+  }
+  return indexReady;
+}
+var MongoRateLimitStore = class {
+  windowMs = 6e4;
+  keyPrefix;
+  constructor(prefix) {
+    this.keyPrefix = prefix;
+  }
+  init(options) {
+    this.windowMs = options.windowMs;
+  }
+  key(key) {
+    return `${this.keyPrefix}:${key}`;
+  }
+  async increment(key) {
+    await ensureIndex();
+    const now = Date.now();
+    const collection = import_mongoose27.default.connection.collection(COLLECTION);
+    const existing = await collection.findOneAndUpdate(
+      { _id: this.key(key), expiresAt: { $gt: new Date(now) } },
+      { $inc: { count: 1 } },
+      { returnDocument: "after" }
+    );
+    if (existing) {
+      return { totalHits: existing.count, resetTime: existing.expiresAt };
+    }
+    const resetTime = new Date(now + this.windowMs);
+    await collection.updateOne(
+      { _id: this.key(key) },
+      { $set: { count: 1, expiresAt: resetTime } },
+      { upsert: true }
+    );
+    return { totalHits: 1, resetTime };
+  }
+  async decrement(key) {
+    await import_mongoose27.default.connection.collection(COLLECTION).updateOne({ _id: this.key(key), count: { $gt: 0 } }, { $inc: { count: -1 } });
+  }
+  async resetKey(key) {
+    await import_mongoose27.default.connection.collection(COLLECTION).deleteOne({ _id: this.key(key) });
+  }
+};
+function sharedRateLimitStore(prefix) {
+  if (process.env.VERCEL !== "1") return void 0;
+  return new MongoRateLimitStore(prefix);
+}
 
 // src/modules/system/auth.routes.ts
 var router9 = (0, import_express10.Router)();
@@ -5429,6 +6005,9 @@ var loginSchema = import_zod11.z.object({
   password: import_zod11.z.string().min(8)
 });
 var loginRateLimiter = (0, import_express_rate_limit10.default)({
+  // Shared store on serverless: the in-memory default counts per instance, so
+  // brute-force protection here was bypassable with concurrent requests.
+  store: sharedRateLimitStore("login"),
   windowMs: 15 * 60 * 1e3,
   max: 30,
   standardHeaders: true,
@@ -5472,77 +6051,13 @@ router9.get(
   requireRole(["super_admin", "admin"]),
   async (req, res, next) => {
     try {
-      const isSuperAdmin = req.user.role === "super_admin";
-      if (isSuperAdmin) {
-        const allMenus = await MenuMasterModel.find({
-          // clientCode: env.CLIENT_CODE,
-          isActive: true
-        }).sort({ isRoot: -1, sequence: 1 }).lean().exec();
-        const allActions = await ActionTypeModel.find({
-          // clientCode: env.CLIENT_CODE,
-          isActive: true
-        }).lean().exec();
-        const permissions2 = {};
-        for (const menu of allMenus) {
-          permissions2[menu.menuUrl] = allActions.map((a) => a.actionCode);
-        }
-        return res.json({
-          user: req.user,
-          allowedMenus: allMenus,
-          permissions: permissions2
-        });
-      }
-      const employee = await EmployeeModel.findOne({ userId: req.user.id }).lean().exec();
-      if (!employee || !employee.roleId) {
-        return res.json({ user: req.user, allowedMenus: [], permissions: {} });
-      }
-      const role = await RoleMasterModel.findById(employee.roleId).lean().exec();
-      if (!role) {
-        return res.json({ user: req.user, allowedMenus: [], permissions: {} });
-      }
-      const grantedMenuIds = new Set(
-        role.permissions.filter((p) => p.granted).map((p) => p.menuId)
-      );
-      const allowedMenus = await MenuMasterModel.find({
-        _id: { $in: Array.from(grantedMenuIds) },
-        clientCode: env.CLIENT_CODE,
-        isActive: true
-      }).sort({ isRoot: -1, sequence: 1 }).lean().exec();
-      const actionTypeIds = new Set(
-        role.permissions.filter((p) => p.granted).map((p) => p.actionTypeId)
-      );
-      const actionTypes = await ActionTypeModel.find({
-        _id: { $in: Array.from(actionTypeIds) },
-        clientCode: env.CLIENT_CODE,
-        isActive: true
-      }).lean().exec();
-      const actionCodeMap = new Map(
-        actionTypes.map((a) => {
-          const typed = a;
-          return [typed._id.toString(), typed.actionCode];
-        })
-      );
-      const permissions = {};
-      for (const perm of role.permissions) {
-        if (!perm.granted) continue;
-        const menu = allowedMenus.find((m) => {
-          const typed = m;
-          return typed._id.toString() === perm.menuId;
-        });
-        const actionCode = actionCodeMap.get(perm.actionTypeId);
-        if (menu && actionCode) {
-          const typedMenu = menu;
-          if (!permissions[typedMenu.menuUrl])
-            permissions[typedMenu.menuUrl] = [];
-          permissions[typedMenu.menuUrl].push(actionCode);
-        }
-      }
+      const snapshot = await buildRbacSnapshot(req.user.id, req.user.role);
       res.json({
         user: req.user,
-        allowedMenus,
-        permissions,
-        employeeId: employee._id,
-        roleName: role.roleName
+        allowedMenus: snapshot.allowedMenus,
+        permissions: snapshot.permissions,
+        employeeId: snapshot.employeeId,
+        roleName: snapshot.roleName
       });
     } catch (error) {
       next(error);
@@ -5553,10 +6068,10 @@ var authRoutes = router9;
 
 // src/modules/health/health.routes.ts
 var import_express11 = require("express");
-var import_mongoose25 = __toESM(require("mongoose"), 1);
+var import_mongoose28 = __toESM(require("mongoose"), 1);
 var router10 = (0, import_express11.Router)();
 router10.get("/api/v1/system/health", (_req, res) => {
-  const mongoState = import_mongoose25.default.connection.readyState;
+  const mongoState = import_mongoose28.default.connection.readyState;
   const mongoOk = mongoState === 1;
   const status = mongoOk ? "ok" : "degraded";
   res.status(mongoOk ? 200 : 503).json({
@@ -5570,13 +6085,13 @@ var healthRoutes = router10;
 
 // src/modules/invoices/invoice.routes.ts
 var import_express12 = require("express");
-var import_mongoose27 = __toESM(require("mongoose"), 1);
+var import_mongoose30 = __toESM(require("mongoose"), 1);
 var import_express_rate_limit11 = __toESM(require("express-rate-limit"), 1);
 var import_zod12 = require("zod");
 
 // src/modules/invoices/invoice.models.ts
-var import_mongoose26 = __toESM(require("mongoose"), 1);
-var invoiceLineItemSchema = new import_mongoose26.Schema(
+var import_mongoose29 = __toESM(require("mongoose"), 1);
+var invoiceLineItemSchema = new import_mongoose29.Schema(
   {
     description: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
@@ -5585,7 +6100,7 @@ var invoiceLineItemSchema = new import_mongoose26.Schema(
   },
   { _id: false }
 );
-var invoiceSchema = new import_mongoose26.Schema(
+var invoiceSchema = new import_mongoose29.Schema(
   {
     invoiceNumber: { type: String, required: true, unique: true, index: true },
     status: {
@@ -5593,9 +6108,9 @@ var invoiceSchema = new import_mongoose26.Schema(
       enum: ["draft", "issued", "sent", "partially_paid", "overdue", "paid", "void", "uncollectible"],
       default: "draft"
     },
-    contactId: { type: import_mongoose26.Schema.Types.ObjectId, ref: "CrmContact" },
-    dealId: { type: import_mongoose26.Schema.Types.ObjectId, ref: "CrmDeal" },
-    orderId: { type: import_mongoose26.Schema.Types.ObjectId, ref: "EcommerceOrder" },
+    contactId: { type: import_mongoose29.Schema.Types.ObjectId, ref: "CrmContact" },
+    dealId: { type: import_mongoose29.Schema.Types.ObjectId, ref: "CrmDeal" },
+    orderId: { type: import_mongoose29.Schema.Types.ObjectId, ref: "EcommerceOrder" },
     currency: { type: String, required: true, default: "USD" },
     lineItems: { type: [invoiceLineItemSchema], required: true, default: [] },
     subtotalMinor: { type: Number, required: true, min: 0, default: 0 },
@@ -5613,7 +6128,7 @@ var invoiceSchema = new import_mongoose26.Schema(
   { timestamps: true }
 );
 invoiceSchema.index({ status: 1, dueAt: 1 });
-var InvoiceDocumentModelRef = import_mongoose26.default.models.InvoiceDocument ?? import_mongoose26.default.model("InvoiceDocument", invoiceSchema);
+var InvoiceDocumentModelRef = import_mongoose29.default.models.InvoiceDocument ?? import_mongoose29.default.model("InvoiceDocument", invoiceSchema);
 
 // src/modules/invoices/invoice.routes.ts
 var router11 = (0, import_express12.Router)();
@@ -5645,7 +6160,7 @@ var transitionPayloadSchema2 = import_zod12.z.object({
   amountPaidMinor: import_zod12.z.number().int().min(0).optional()
 });
 function ensureValidObjectId9(id) {
-  if (!import_mongoose27.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose30.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -5715,9 +6230,9 @@ router11.post("/api/v1/invoices/documents", invoiceWriteRateLimiter, ...moduleGu
     const created = await InvoiceDocumentModelRef.create({
       invoiceNumber: `INV-${Date.now()}`,
       status: "draft",
-      contactId: payload.contactId ? new import_mongoose27.default.Types.ObjectId(payload.contactId) : void 0,
-      dealId: payload.dealId ? new import_mongoose27.default.Types.ObjectId(payload.dealId) : void 0,
-      orderId: payload.orderId ? new import_mongoose27.default.Types.ObjectId(payload.orderId) : void 0,
+      contactId: payload.contactId ? new import_mongoose30.default.Types.ObjectId(payload.contactId) : void 0,
+      dealId: payload.dealId ? new import_mongoose30.default.Types.ObjectId(payload.dealId) : void 0,
+      orderId: payload.orderId ? new import_mongoose30.default.Types.ObjectId(payload.orderId) : void 0,
       currency: payload.currency,
       lineItems,
       subtotalMinor,
@@ -5787,9 +6302,9 @@ router11.patch(
         req.params.id,
         {
           ...payload,
-          contactId: payload.contactId ? new import_mongoose27.default.Types.ObjectId(payload.contactId) : payload.contactId,
-          dealId: payload.dealId ? new import_mongoose27.default.Types.ObjectId(payload.dealId) : payload.dealId,
-          orderId: payload.orderId ? new import_mongoose27.default.Types.ObjectId(payload.orderId) : payload.orderId,
+          contactId: payload.contactId ? new import_mongoose30.default.Types.ObjectId(payload.contactId) : payload.contactId,
+          dealId: payload.dealId ? new import_mongoose30.default.Types.ObjectId(payload.dealId) : payload.dealId,
+          orderId: payload.orderId ? new import_mongoose30.default.Types.ObjectId(payload.orderId) : payload.orderId,
           lineItems: effectivePayload.lineItems,
           subtotalMinor,
           grandTotalMinor,
@@ -5880,25 +6395,25 @@ router11.get("/api/v1/invoices/insights", ...moduleGuards("invoices", "invoices.
 var invoiceRoutes = router11;
 
 // src/modules/resource/resource.handlers.ts
-var import_mongoose29 = __toESM(require("mongoose"), 1);
+var import_mongoose32 = __toESM(require("mongoose"), 1);
 var import_zod13 = require("zod");
 
 // src/modules/resource/resource.model.ts
-var import_mongoose28 = __toESM(require("mongoose"), 1);
-var resourceRecordSchema = new import_mongoose28.Schema(
+var import_mongoose31 = __toESM(require("mongoose"), 1);
+var resourceRecordSchema = new import_mongoose31.Schema(
   {
     moduleKey: { type: String, enum: MODULE_KEYS, required: true, index: true },
     title: { type: String, required: true, trim: true },
     description: { type: String, default: "" },
     status: { type: String, enum: ["active", "inactive", "archived"], default: "active" },
-    data: { type: import_mongoose28.Schema.Types.Mixed, default: {} },
+    data: { type: import_mongoose31.Schema.Types.Mixed, default: {} },
     createdBy: { type: String },
     updatedBy: { type: String }
   },
   { timestamps: true }
 );
 resourceRecordSchema.index({ moduleKey: 1, createdAt: -1 });
-var ResourceRecordModel = import_mongoose28.default.models.ResourceRecord ?? import_mongoose28.default.model("ResourceRecord", resourceRecordSchema);
+var ResourceRecordModel = import_mongoose31.default.models.ResourceRecord ?? import_mongoose31.default.model("ResourceRecord", resourceRecordSchema);
 
 // src/modules/resource/resource.handlers.ts
 var createSchema = import_zod13.z.object({
@@ -5929,7 +6444,7 @@ function toModuleRecord(document) {
   };
 }
 function ensureValidId(id) {
-  if (!import_mongoose29.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose32.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid record id");
   }
 }
@@ -6083,12 +6598,12 @@ var moduleManifests = MODULE_KEYS.map((moduleKey) => ({
 // src/modules/projects/projects.routes.ts
 var import_express_rate_limit12 = __toESM(require("express-rate-limit"), 1);
 var import_express13 = require("express");
-var import_mongoose31 = __toESM(require("mongoose"), 1);
+var import_mongoose34 = __toESM(require("mongoose"), 1);
 var import_zod14 = require("zod");
 
 // src/modules/projects/projects.models.ts
-var import_mongoose30 = __toESM(require("mongoose"), 1);
-var projectSchema = new import_mongoose30.Schema(
+var import_mongoose33 = __toESM(require("mongoose"), 1);
+var projectSchema = new import_mongoose33.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 200 },
     description: { type: String, maxlength: 4e3 },
@@ -6109,7 +6624,7 @@ var projectSchema = new import_mongoose30.Schema(
   { timestamps: true }
 );
 projectSchema.index({ status: 1, createdAt: -1 });
-var ProjectModel = import_mongoose30.default.models.Project ?? import_mongoose30.default.model("Project", projectSchema);
+var ProjectModel = import_mongoose33.default.models.Project ?? import_mongoose33.default.model("Project", projectSchema);
 
 // src/modules/projects/projects.routes.ts
 var router12 = (0, import_express13.Router)();
@@ -6155,7 +6670,7 @@ var projectWriteRateLimiter = (0, import_express_rate_limit12.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId10(id) {
-  if (!import_mongoose31.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose34.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -6430,12 +6945,12 @@ var projectRoutes = router12;
 var import_crypto4 = require("crypto");
 var import_express_rate_limit13 = __toESM(require("express-rate-limit"), 1);
 var import_express14 = require("express");
-var import_mongoose33 = __toESM(require("mongoose"), 1);
+var import_mongoose36 = __toESM(require("mongoose"), 1);
 var import_zod15 = require("zod");
 
 // src/modules/support-tickets/support-tickets.models.ts
-var import_mongoose32 = __toESM(require("mongoose"), 1);
-var supportTicketCommentSchema = new import_mongoose32.Schema(
+var import_mongoose35 = __toESM(require("mongoose"), 1);
+var supportTicketCommentSchema = new import_mongoose35.Schema(
   {
     authorUserId: { type: String, required: true },
     authorEmail: { type: String, required: true },
@@ -6445,7 +6960,7 @@ var supportTicketCommentSchema = new import_mongoose32.Schema(
   },
   { _id: false }
 );
-var supportTicketSchema = new import_mongoose32.Schema(
+var supportTicketSchema = new import_mongoose35.Schema(
   {
     ticketNumber: { type: String, required: true, unique: true, index: true },
     subject: { type: String, required: true, trim: true },
@@ -6470,7 +6985,7 @@ var supportTicketSchema = new import_mongoose32.Schema(
   { timestamps: true }
 );
 supportTicketSchema.index({ status: 1, priority: 1, createdAt: -1 });
-var SupportTicketModel = import_mongoose32.default.models.SupportTicket ?? import_mongoose32.default.model("SupportTicket", supportTicketSchema);
+var SupportTicketModel = import_mongoose35.default.models.SupportTicket ?? import_mongoose35.default.model("SupportTicket", supportTicketSchema);
 
 // src/modules/support-tickets/support-tickets.routes.ts
 var router13 = (0, import_express14.Router)();
@@ -6513,7 +7028,7 @@ var supportTicketWriteRateLimiter = (0, import_express_rate_limit13.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId11(id) {
-  if (!import_mongoose33.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose36.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -6782,8 +7297,8 @@ var import_express_rate_limit14 = __toESM(require("express-rate-limit"), 1);
 var import_zod16 = require("zod");
 
 // src/modules/menu/menu.model.ts
-var import_mongoose34 = __toESM(require("mongoose"), 1);
-var menuGroupSchema = new import_mongoose34.Schema(
+var import_mongoose37 = __toESM(require("mongoose"), 1);
+var menuGroupSchema = new import_mongoose37.Schema(
   {
     clientCode: { type: String, required: true },
     name: { type: String, required: true, maxlength: 100 },
@@ -6799,16 +7314,16 @@ var menuGroupSchema = new import_mongoose34.Schema(
 );
 menuGroupSchema.index({ clientCode: 1, slug: 1 }, { unique: true });
 menuGroupSchema.index({ clientCode: 1, order: 1 });
-var MenuGroupModel = import_mongoose34.default.models.MenuGroup ?? import_mongoose34.default.model("MenuGroup", menuGroupSchema);
-var menuItemSchema = new import_mongoose34.Schema(
+var MenuGroupModel = import_mongoose37.default.models.MenuGroup ?? import_mongoose37.default.model("MenuGroup", menuGroupSchema);
+var menuItemSchema = new import_mongoose37.Schema(
   {
     clientCode: { type: String, required: true },
-    groupId: { type: import_mongoose34.Schema.Types.ObjectId, ref: "MenuGroup", required: true },
+    groupId: { type: import_mongoose37.Schema.Types.ObjectId, ref: "MenuGroup", required: true },
     name: { type: String, required: true, maxlength: 100 },
     slug: { type: String, required: true, maxlength: 100 },
     route: { type: String, required: true, maxlength: 255 },
     icon: { type: String, maxlength: 100, default: "" },
-    parentId: { type: import_mongoose34.Schema.Types.ObjectId, ref: "MenuItem", default: null },
+    parentId: { type: import_mongoose37.Schema.Types.ObjectId, ref: "MenuItem", default: null },
     order: { type: Number, required: true, default: 0 },
     isParent: { type: Boolean, required: true, default: false },
     createdBy: { type: String, required: true },
@@ -6818,7 +7333,7 @@ var menuItemSchema = new import_mongoose34.Schema(
 );
 menuItemSchema.index({ clientCode: 1, groupId: 1, slug: 1 }, { unique: true });
 menuItemSchema.index({ clientCode: 1, groupId: 1, order: 1 });
-var MenuItemModel = import_mongoose34.default.models.MenuItem ?? import_mongoose34.default.model("MenuItem", menuItemSchema);
+var MenuItemModel = import_mongoose37.default.models.MenuItem ?? import_mongoose37.default.model("MenuItem", menuItemSchema);
 
 // src/modules/menu/menu.service.ts
 function toMenuItemResponse(doc) {
@@ -6976,6 +7491,13 @@ var menuWriteRateLimiter = (0, import_express_rate_limit14.default)({
   standardHeaders: true,
   legacyHeaders: false
 });
+var MENU_MANAGEMENT = "/settings/menu-management";
+var canEditMenus = (action) => [
+  menuWriteRateLimiter,
+  authenticateJwt,
+  requireRole(["super_admin", "admin"]),
+  requireRbacPermission(MENU_MANAGEMENT, action)
+];
 var createGroupSchema = import_zod16.z.object({
   name: import_zod16.z.string().min(1).max(100),
   slug: import_zod16.z.string().min(1).max(100),
@@ -7029,9 +7551,7 @@ router14.get(
 );
 router14.post(
   "/api/v1/menus/groups",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("write"),
   async (req, res, next) => {
     try {
       const payload = createGroupSchema.parse(req.body ?? {});
@@ -7048,9 +7568,7 @@ router14.post(
 );
 router14.put(
   "/api/v1/menus/groups/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req, res, next) => {
     try {
       const payload = updateGroupSchema.parse(req.body ?? {});
@@ -7071,9 +7589,7 @@ router14.put(
 );
 router14.delete(
   "/api/v1/menus/groups/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("delete"),
   async (req, res, next) => {
     try {
       const deleted = await menuService.deleteGroup(req.params.id);
@@ -7089,9 +7605,7 @@ router14.delete(
 );
 router14.post(
   "/api/v1/menus/items",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("write"),
   async (req, res, next) => {
     try {
       const payload = createItemSchema.parse(req.body ?? {});
@@ -7108,9 +7622,7 @@ router14.post(
 );
 router14.put(
   "/api/v1/menus/items/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req, res, next) => {
     try {
       const payload = updateItemSchema.parse(req.body ?? {});
@@ -7131,9 +7643,7 @@ router14.put(
 );
 router14.delete(
   "/api/v1/menus/items/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("delete"),
   async (req, res, next) => {
     try {
       const deleted = await menuService.deleteItem(req.params.id);
@@ -7149,9 +7659,7 @@ router14.delete(
 );
 router14.patch(
   "/api/v1/menus/items/:id/reorder",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req, res, next) => {
     try {
       const { order } = reorderSchema.parse(req.body ?? {});
@@ -7172,9 +7680,7 @@ router14.patch(
 );
 router14.patch(
   "/api/v1/menus/groups/:id/reorder",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req, res, next) => {
     try {
       const { order } = reorderSchema.parse(req.body ?? {});
@@ -7200,58 +7706,19 @@ var import_bcryptjs3 = __toESM(require("bcryptjs"), 1);
 var import_express16 = require("express");
 var import_express_rate_limit15 = __toESM(require("express-rate-limit"), 1);
 var import_zod17 = require("zod");
-
-// src/core/audit/audit-log.model.ts
-var import_mongoose35 = __toESM(require("mongoose"), 1);
-var auditLogSchema = new import_mongoose35.Schema(
-  {
-    action: { type: String, required: true, index: true },
-    entity: { type: String, required: true, index: true },
-    entityId: { type: String },
-    userId: { type: String, required: true, index: true },
-    userEmail: { type: String },
-    before: { type: import_mongoose35.Schema.Types.Mixed },
-    after: { type: import_mongoose35.Schema.Types.Mixed },
-    metadata: { type: import_mongoose35.Schema.Types.Mixed },
-    createdAt: { type: Date, default: () => /* @__PURE__ */ new Date(), index: true }
-  },
-  { timestamps: false }
-);
-auditLogSchema.index({ entity: 1, action: 1, createdAt: -1 });
-var AuditLogModel = import_mongoose35.default.models.AuditLog ?? import_mongoose35.default.model("AuditLog", auditLogSchema);
-
-// src/core/audit/audit-log.service.ts
-var AuditLogService = class {
-  async log(entry) {
-    await AuditLogModel.create(entry);
-  }
-  async getRecent(options = {}) {
-    const filter = {};
-    if (options.entity) {
-      filter.entity = options.entity;
-    }
-    const limit = Math.min(options.limit ?? 50, 200);
-    const offset = options.offset ?? 0;
-    const [items, total] = await Promise.all([
-      AuditLogModel.find(filter).sort({ createdAt: -1 }).skip(offset).limit(limit).lean().exec(),
-      AuditLogModel.countDocuments(filter).exec()
-    ]);
-    return { items, total };
-  }
-};
-var auditLogService = new AuditLogService();
+init_audit_log_service();
 
 // src/core/feature-flags/ui-feature-flags.model.ts
-var import_mongoose36 = __toESM(require("mongoose"), 1);
-var uiFeatureFlagsSchema = new import_mongoose36.Schema(
+var import_mongoose38 = __toESM(require("mongoose"), 1);
+var uiFeatureFlagsSchema = new import_mongoose38.Schema(
   {
     clientCode: { type: String, required: true, unique: true },
-    flags: { type: import_mongoose36.Schema.Types.Mixed, required: true, default: {} },
+    flags: { type: import_mongoose38.Schema.Types.Mixed, required: true, default: {} },
     updatedBy: { type: String }
   },
   { timestamps: true }
 );
-var UIFeatureFlagsModel = import_mongoose36.default.models.UIFeatureFlags ?? import_mongoose36.default.model("UIFeatureFlags", uiFeatureFlagsSchema);
+var UIFeatureFlagsModel = import_mongoose38.default.models.UIFeatureFlags ?? import_mongoose38.default.model("UIFeatureFlags", uiFeatureFlagsSchema);
 
 // src/core/feature-flags/ui-feature-flags.service.ts
 var UIFeatureFlagsService = class {
@@ -7298,12 +7765,12 @@ var UIFeatureFlagsService = class {
 var uiFeatureFlagsService = new UIFeatureFlagsService();
 
 // src/modules/tasks/tasks.models.ts
-var import_mongoose37 = __toESM(require("mongoose"), 1);
-var taskSchema = new import_mongoose37.Schema(
+var import_mongoose39 = __toESM(require("mongoose"), 1);
+var taskSchema = new import_mongoose39.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 300 },
     description: { type: String, maxlength: 8e3 },
-    projectId: { type: import_mongoose37.Schema.Types.ObjectId, ref: "Project", index: true },
+    projectId: { type: import_mongoose39.Schema.Types.ObjectId, ref: "Project", index: true },
     status: {
       type: String,
       enum: ["todo", "in_progress", "review", "done", "cancelled"],
@@ -7322,11 +7789,11 @@ var taskSchema = new import_mongoose37.Schema(
 );
 taskSchema.index({ status: 1, priority: 1, createdAt: -1 });
 taskSchema.index({ projectId: 1, status: 1 });
-var TaskModel = import_mongoose37.default.models.Task ?? import_mongoose37.default.model("Task", taskSchema);
+var TaskModel = import_mongoose39.default.models.Task ?? import_mongoose39.default.model("Task", taskSchema);
 
 // src/modules/system/system-settings.model.ts
-var import_mongoose38 = __toESM(require("mongoose"), 1);
-var systemSettingsSchema = new import_mongoose38.Schema(
+var import_mongoose40 = __toESM(require("mongoose"), 1);
+var systemSettingsSchema = new import_mongoose40.Schema(
   {
     clientCode: { type: String, required: true, unique: true },
     timezone: { type: String, required: true, default: "UTC" },
@@ -7336,7 +7803,7 @@ var systemSettingsSchema = new import_mongoose38.Schema(
   },
   { timestamps: true }
 );
-var SystemSettingsModel = import_mongoose38.default.models.SystemSettings ?? import_mongoose38.default.model("SystemSettings", systemSettingsSchema);
+var SystemSettingsModel = import_mongoose40.default.models.SystemSettings ?? import_mongoose40.default.model("SystemSettings", systemSettingsSchema);
 
 // src/modules/system/system-settings.service.ts
 var DEFAULTS = {
@@ -7373,8 +7840,8 @@ var SystemSettingsService = class {
 var systemSettingsService = new SystemSettingsService();
 
 // src/modules/system/branding.model.ts
-var import_mongoose39 = __toESM(require("mongoose"), 1);
-var brandingSchema = new import_mongoose39.Schema(
+var import_mongoose41 = __toESM(require("mongoose"), 1);
+var brandingSchema = new import_mongoose41.Schema(
   {
     clientCode: { type: String, required: true, unique: true },
     companyName: { type: String, required: true, default: "Admin Platform" },
@@ -7384,7 +7851,7 @@ var brandingSchema = new import_mongoose39.Schema(
   },
   { timestamps: true }
 );
-var BrandingModel = import_mongoose39.default.models.Branding ?? import_mongoose39.default.model("Branding", brandingSchema);
+var BrandingModel = import_mongoose41.default.models.Branding ?? import_mongoose41.default.model("Branding", brandingSchema);
 
 // src/modules/system/branding.service.ts
 var DEFAULTS2 = {
@@ -7420,166 +7887,9 @@ var BrandingService = class {
 };
 var brandingService = new BrandingService();
 
-// src/core/rbac/custom-role.model.ts
-var import_mongoose40 = __toESM(require("mongoose"), 1);
-var structuredPermissionSchema = new import_mongoose40.Schema(
-  {
-    menuId: { type: String },
-    menuGroupId: { type: String },
-    read: { type: Boolean, default: false },
-    create: { type: Boolean, default: false },
-    update: { type: Boolean, default: false },
-    delete: { type: Boolean, default: false },
-    export: { type: Boolean, default: false }
-  },
-  { _id: false }
-);
-var customRoleSchema = new import_mongoose40.Schema(
-  {
-    clientCode: { type: String, required: true },
-    name: { type: String, required: true, maxlength: 60 },
-    permissions: { type: [String], required: true, default: [] },
-    structuredPermissions: { type: [structuredPermissionSchema], default: [] },
-    createdBy: { type: String, required: true },
-    updatedBy: { type: String, required: true }
-  },
-  { timestamps: true }
-);
-customRoleSchema.index({ clientCode: 1, name: 1 }, { unique: true });
-var CustomRoleModel = import_mongoose40.default.models.CustomRole ?? import_mongoose40.default.model("CustomRole", customRoleSchema);
-
-// src/core/rbac/custom-role.service.ts
-function toResponse(doc) {
-  return {
-    id: String(doc._id),
-    name: doc.name,
-    permissions: doc.permissions,
-    structuredPermissions: (doc.structuredPermissions ?? []).map((sp) => ({
-      menuId: sp.menuId,
-      menuGroupId: sp.menuGroupId,
-      read: sp.read,
-      create: sp.create,
-      update: sp.update,
-      delete: sp.delete,
-      export: sp.export
-    }))
-  };
-}
-var CustomRoleService = class {
-  async list() {
-    const docs = await CustomRoleModel.find({ clientCode: env.CLIENT_CODE }).sort({ name: 1 }).lean().exec();
-    return docs.map(toResponse);
-  }
-  async getById(id) {
-    const doc = await CustomRoleModel.findOne({ _id: id, clientCode: env.CLIENT_CODE }).lean().exec();
-    return doc ? toResponse(doc) : null;
-  }
-  async create(payload, userId) {
-    const doc = await CustomRoleModel.create({
-      clientCode: env.CLIENT_CODE,
-      name: payload.name,
-      permissions: payload.permissions,
-      createdBy: userId,
-      updatedBy: userId
-    });
-    return toResponse(doc.toObject());
-  }
-  async update(id, payload, userId) {
-    const doc = await CustomRoleModel.findOneAndUpdate(
-      { _id: id, clientCode: env.CLIENT_CODE },
-      {
-        $set: {
-          name: payload.name,
-          permissions: payload.permissions,
-          updatedBy: userId
-        }
-      },
-      { new: true }
-    ).lean().exec();
-    return doc ? toResponse(doc) : null;
-  }
-  async remove(id) {
-    const result = await CustomRoleModel.deleteOne({ _id: id, clientCode: env.CLIENT_CODE }).exec();
-    return result.deletedCount > 0;
-  }
-  async getPermissionsForRole(roleId) {
-    const doc = await CustomRoleModel.findOne({ _id: roleId, clientCode: env.CLIENT_CODE }).lean().exec();
-    return doc ? doc.permissions : null;
-  }
-  // ── Structured Permissions ───────────────────────────────────
-  async getStructuredPermissions(roleId) {
-    const doc = await CustomRoleModel.findOne({ _id: roleId, clientCode: env.CLIENT_CODE }).lean().exec();
-    if (!doc) return null;
-    return (doc.structuredPermissions ?? []).map((sp) => ({
-      menuId: sp.menuId,
-      menuGroupId: sp.menuGroupId,
-      read: sp.read,
-      create: sp.create,
-      update: sp.update,
-      delete: sp.delete,
-      export: sp.export
-    }));
-  }
-  async updateStructuredPermissions(roleId, permissions, userId) {
-    const sanitized = permissions.map((p) => ({
-      menuId: p.menuId,
-      menuGroupId: p.menuGroupId,
-      read: Boolean(p.read),
-      create: Boolean(p.create),
-      update: Boolean(p.update),
-      delete: Boolean(p.delete),
-      export: Boolean(p.export)
-    }));
-    const flatPermissions = await this.flattenStructuredToLegacy(sanitized);
-    const doc = await CustomRoleModel.findOneAndUpdate(
-      { _id: roleId, clientCode: env.CLIENT_CODE },
-      {
-        $set: {
-          structuredPermissions: sanitized,
-          permissions: flatPermissions,
-          updatedBy: userId
-        }
-      },
-      { new: true }
-    ).lean().exec();
-    return doc ? toResponse(doc) : null;
-  }
-  /**
-   * Converts structured per-menu permissions into the flat
-   * "module.action" string array used by requirePermission middleware.
-   */
-  async flattenStructuredToLegacy(structured) {
-    const perms = /* @__PURE__ */ new Set();
-    const menuItems = await MenuItemModel.find({ clientCode: env.CLIENT_CODE }).lean().exec();
-    const slugById = /* @__PURE__ */ new Map();
-    for (const item of menuItems) {
-      slugById.set(String(item._id), item.slug);
-    }
-    const actionMap = {
-      read: "read",
-      create: "create",
-      update: "update",
-      delete: "delete",
-      export: "export"
-    };
-    for (const entry of structured) {
-      const id = entry.menuId ?? entry.menuGroupId;
-      if (!id) continue;
-      const slug = slugById.get(id) ?? id;
-      for (const [key, action] of Object.entries(actionMap)) {
-        if (entry[key]) {
-          perms.add(`${slug}.${action}`);
-        }
-      }
-    }
-    return Array.from(perms);
-  }
-};
-var customRoleService = new CustomRoleService();
-
 // src/modules/system/quick-links.model.ts
-var import_mongoose41 = __toESM(require("mongoose"), 1);
-var quickLinkSchema = new import_mongoose41.Schema(
+var import_mongoose42 = __toESM(require("mongoose"), 1);
+var quickLinkSchema = new import_mongoose42.Schema(
   {
     clientCode: { type: String, required: true },
     name: { type: String, required: true, maxlength: 60 },
@@ -7592,10 +7902,10 @@ var quickLinkSchema = new import_mongoose41.Schema(
   { timestamps: true }
 );
 quickLinkSchema.index({ clientCode: 1, order: 1 });
-var QuickLinkModel = import_mongoose41.default.models.QuickLink ?? import_mongoose41.default.model("QuickLink", quickLinkSchema);
+var QuickLinkModel = import_mongoose42.default.models.QuickLink ?? import_mongoose42.default.model("QuickLink", quickLinkSchema);
 
 // src/modules/system/quick-links.service.ts
-function toResponse2(doc) {
+function toResponse(doc) {
   return {
     _id: String(doc._id),
     name: doc.name,
@@ -7610,7 +7920,7 @@ var QuickLinksService = class {
   }
   async list() {
     const docs = await QuickLinkModel.find({ clientCode: this.clientCode }).sort({ order: 1 }).lean().exec();
-    return docs.map(toResponse2);
+    return docs.map(toResponse);
   }
   async create(payload, userId) {
     const doc = await QuickLinkModel.create({
@@ -7620,7 +7930,7 @@ var QuickLinksService = class {
       createdBy: userId,
       updatedBy: userId
     });
-    return toResponse2(doc.toObject());
+    return toResponse(doc.toObject());
   }
   async update(id, payload, userId) {
     const doc = await QuickLinkModel.findOneAndUpdate(
@@ -7628,7 +7938,7 @@ var QuickLinksService = class {
       { $set: { ...payload, updatedBy: userId } },
       { new: true }
     ).lean().exec();
-    return doc ? toResponse2(doc) : null;
+    return doc ? toResponse(doc) : null;
   }
   async remove(id) {
     const result = await QuickLinkModel.deleteOne({
@@ -7641,8 +7951,8 @@ var QuickLinksService = class {
 var quickLinksService = new QuickLinksService();
 
 // src/modules/system/notification.model.ts
-var import_mongoose42 = __toESM(require("mongoose"), 1);
-var notificationSchema = new import_mongoose42.Schema(
+var import_mongoose43 = __toESM(require("mongoose"), 1);
+var notificationSchema = new import_mongoose43.Schema(
   {
     userId: { type: String, required: true, index: true },
     title: { type: String, required: true, maxlength: 200 },
@@ -7654,10 +7964,10 @@ var notificationSchema = new import_mongoose42.Schema(
   { timestamps: true }
 );
 notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
-var NotificationModel = import_mongoose42.default.models.Notification ?? import_mongoose42.default.model("Notification", notificationSchema);
+var NotificationModel = import_mongoose43.default.models.Notification ?? import_mongoose43.default.model("Notification", notificationSchema);
 
 // src/modules/system/notification.service.ts
-function toResponse3(doc) {
+function toResponse2(doc) {
   return {
     id: String(doc._id),
     title: doc.title,
@@ -7674,7 +7984,7 @@ var NotificationService = class {
       NotificationModel.find({ userId }).sort({ createdAt: -1 }).skip(offset).limit(limit).lean().exec(),
       NotificationModel.countDocuments({ userId }).exec()
     ]);
-    return { items: items.map(toResponse3), total };
+    return { items: items.map(toResponse2), total };
   }
   async unreadCount(userId) {
     return NotificationModel.countDocuments({ userId, read: false }).exec();
@@ -7701,14 +8011,14 @@ var NotificationService = class {
       type: payload.type ?? "info",
       link: payload.link
     });
-    return toResponse3(doc.toObject());
+    return toResponse2(doc.toObject());
   }
 };
 var notificationService = new NotificationService();
 
 // src/modules/todo/todo.models.ts
-var import_mongoose43 = __toESM(require("mongoose"), 1);
-var todoItemSchema = new import_mongoose43.Schema(
+var import_mongoose44 = __toESM(require("mongoose"), 1);
+var todoItemSchema = new import_mongoose44.Schema(
   {
     title: { type: String, required: true, maxlength: 300, trim: true },
     description: { type: String, maxlength: 2e3 },
@@ -7732,7 +8042,7 @@ var todoItemSchema = new import_mongoose43.Schema(
   { timestamps: true }
 );
 todoItemSchema.index({ ownerUserId: 1, status: 1, createdAt: -1 });
-var TodoItemModel = import_mongoose43.default.models.TodoItem ?? import_mongoose43.default.model("TodoItem", todoItemSchema);
+var TodoItemModel = import_mongoose44.default.models.TodoItem ?? import_mongoose44.default.model("TodoItem", todoItemSchema);
 
 // src/modules/system/system.routes.ts
 var router15 = (0, import_express16.Router)();
@@ -7753,47 +8063,25 @@ router15.get(
     try {
       const features = await featureConfigService.getEnabledFeatures();
       const role = req.user.role;
-      let permissions = getPermissionsByRole(role);
-      let customRole;
-      if (role === "admin") {
-        const userDoc = await UserModel.findById(req.user.id).lean().exec();
-        if (userDoc?.customRoleId) {
-          const crPerms = await customRoleService.getPermissionsForRole(
-            userDoc.customRoleId
-          );
-          if (crPerms) {
-            permissions = crPerms;
-            const crDetails = await customRoleService.getById(
-              userDoc.customRoleId
-            );
-            if (crDetails) {
-              customRole = { id: crDetails.id, name: crDetails.name };
-            }
-          }
-        }
-      }
-      const [uiFeatureFlags, menuGroups] = await Promise.all([
+      const permissions = getPermissionsByRole(role);
+      const [uiFeatureFlags, menuGroups, rbac] = await Promise.all([
         uiFeatureFlagsService.getFlags(),
-        menuService.listGroupsWithMenus()
+        menuService.listGroupsWithMenus(),
+        // Same builder GET /auth/user/me uses, so the bootstrap and that
+        // endpoint cannot disagree about what this user may do.
+        buildRbacSnapshot(req.user.id, role)
       ]);
-      let currentRolePermissions;
-      if (role === "admin" && customRole) {
-        const userDoc2 = await UserModel.findById(req.user.id).lean().exec();
-        if (userDoc2?.customRoleId) {
-          currentRolePermissions = await customRoleService.getStructuredPermissions(
-            userDoc2.customRoleId
-          );
-        }
-      }
       res.json({
         user: req.user,
         permissions,
         features,
         uiFeatureFlags,
         menuGroups,
-        ...currentRolePermissions ? { currentRolePermissions } : {},
-        moduleCatalog: MODULE_DEFINITIONS,
-        ...customRole ? { customRole } : {}
+        rbacPermissions: rbac.permissions,
+        rbacAllowedMenus: rbac.allowedMenus,
+        rbacRoleName: rbac.roleName,
+        employeeId: rbac.employeeId,
+        moduleCatalog: MODULE_DEFINITIONS
       });
     } catch (error) {
       next(error);
@@ -7920,7 +8208,8 @@ router15.put(
 router15.get(
   "/api/v1/system/payment-settings",
   authenticateJwt,
-  requireRole(["super_admin"]),
+  requireRole(["super_admin", "admin"]),
+  requireRbacPermission("/settings/payments", "read"),
   (_req, res) => {
     const providers = PAYMENT_PROVIDER_KEYS.map((id) => {
       const configured = id === "stripe" ? Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET) : id === "paypal" ? Boolean(
@@ -8036,6 +8325,9 @@ router15.get(
   }
 );
 router15.put(
+  // SUPER-ADMIN ONLY BY DESIGN: timezone and currency silently reinterpret
+  // every stored date and amount in the panel. Nothing visibly breaks, which
+  // is what makes it a bad thing to hand out.
   "/api/v1/system/settings",
   systemWriteRateLimiter,
   authenticateJwt,
@@ -8061,189 +8353,6 @@ router15.put(
             400,
             ERROR_CODES.BAD_REQUEST,
             "Invalid system settings payload"
-          )
-        );
-        return;
-      }
-      next(error);
-    }
-  }
-);
-var customRoleSchema2 = import_zod17.z.object({
-  name: import_zod17.z.string().min(1).max(60),
-  permissions: import_zod17.z.array(import_zod17.z.string().min(1))
-});
-router15.get(
-  "/api/v1/system/custom-roles",
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (_req, res, next) => {
-    try {
-      const roles = await customRoleService.list();
-      res.json({ roles });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-router15.post(
-  "/api/v1/system/custom-roles",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req, res, next) => {
-    try {
-      const payload = customRoleSchema2.parse(req.body ?? {});
-      const role = await customRoleService.create(payload, req.user.id);
-      res.status(201).json(role);
-    } catch (error) {
-      if (error instanceof import_zod17.z.ZodError) {
-        next(
-          new AppError(
-            400,
-            ERROR_CODES.BAD_REQUEST,
-            "Invalid custom role payload"
-          )
-        );
-        return;
-      }
-      next(error);
-    }
-  }
-);
-router15.put(
-  "/api/v1/system/custom-roles/:id",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req, res, next) => {
-    try {
-      const payload = customRoleSchema2.parse(req.body ?? {});
-      const role = await customRoleService.update(
-        req.params.id,
-        payload,
-        req.user.id
-      );
-      if (!role) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      res.json(role);
-    } catch (error) {
-      if (error instanceof import_zod17.z.ZodError) {
-        next(
-          new AppError(
-            400,
-            ERROR_CODES.BAD_REQUEST,
-            "Invalid custom role payload"
-          )
-        );
-        return;
-      }
-      next(error);
-    }
-  }
-);
-router15.delete(
-  "/api/v1/system/custom-roles/:id",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req, res, next) => {
-    try {
-      const deleted = await customRoleService.remove(req.params.id);
-      if (!deleted) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      await UserModel.updateMany(
-        { customRoleId: req.params.id },
-        { $unset: { customRoleId: 1 } }
-      );
-      res.json({ deleted: true });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-var structuredPermissionsSchema = import_zod17.z.object({
-  permissions: import_zod17.z.array(
-    import_zod17.z.object({
-      menuId: import_zod17.z.string().optional(),
-      menuGroupId: import_zod17.z.string().optional(),
-      read: import_zod17.z.boolean(),
-      create: import_zod17.z.boolean(),
-      update: import_zod17.z.boolean(),
-      delete: import_zod17.z.boolean(),
-      export: import_zod17.z.boolean()
-    })
-  )
-});
-router15.get(
-  "/api/v1/system/custom-roles/:id/permissions",
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req, res, next) => {
-    try {
-      const perms = await customRoleService.getStructuredPermissions(
-        req.params.id
-      );
-      if (perms === null) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      res.json({ permissions: perms });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-router15.put(
-  "/api/v1/system/custom-roles/:id/permissions",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req, res, next) => {
-    try {
-      const { permissions } = structuredPermissionsSchema.parse(req.body ?? {});
-      const previous = await customRoleService.getStructuredPermissions(
-        req.params.id
-      );
-      if (previous === null) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      const updated = await customRoleService.updateStructuredPermissions(
-        req.params.id,
-        permissions,
-        req.user.id
-      );
-      if (!updated) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      await auditLogService.log({
-        action: "custom_role.permissions_update",
-        entity: "custom_role",
-        userId: req.user.id,
-        userEmail: req.user.email,
-        before: {
-          roleId: req.params.id,
-          permissions: previous
-        },
-        after: {
-          roleId: req.params.id,
-          permissions: updated.structuredPermissions
-        }
-      });
-      res.json(updated);
-    } catch (error) {
-      if (error instanceof import_zod17.z.ZodError) {
-        next(
-          new AppError(
-            400,
-            ERROR_CODES.BAD_REQUEST,
-            "Invalid permissions payload"
           )
         );
         return;
@@ -8401,43 +8510,6 @@ router15.delete(
     }
   }
 );
-router15.put(
-  "/api/v1/system/users/:userId/custom-role",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req, res, next) => {
-    try {
-      const { customRoleId } = import_zod17.z.object({
-        customRoleId: import_zod17.z.string().min(1).nullable()
-      }).parse(req.body ?? {});
-      if (customRoleId) {
-        const role = await customRoleService.getById(customRoleId);
-        if (!role) {
-          next(
-            new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found")
-          );
-          return;
-        }
-      }
-      const result = await UserModel.updateOne(
-        { _id: req.params.userId },
-        customRoleId ? { $set: { customRoleId } } : { $unset: { customRoleId: 1 } }
-      );
-      if (result.matchedCount === 0) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "User not found"));
-        return;
-      }
-      res.json({ updated: true });
-    } catch (error) {
-      if (error instanceof import_zod17.z.ZodError) {
-        next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid payload"));
-        return;
-      }
-      next(error);
-    }
-  }
-);
 var quickLinkSchema2 = import_zod17.z.object({
   name: import_zod17.z.string().min(1).max(60),
   url: import_zod17.z.string().min(1).max(2048),
@@ -8555,7 +8627,8 @@ router15.put(
   "/api/v1/system/branding",
   systemWriteRateLimiter,
   authenticateJwt,
-  requireRole(["super_admin"]),
+  requireRole(["super_admin", "admin"]),
+  requireRbacPermission("/settings/branding", "edit"),
   async (req, res, next) => {
     try {
       const payload = brandingSchema2.parse(req.body ?? {});
@@ -8912,7 +8985,7 @@ var systemRoutes = router15;
 // src/modules/tasks/tasks.routes.ts
 var import_express_rate_limit16 = __toESM(require("express-rate-limit"), 1);
 var import_express17 = require("express");
-var import_mongoose44 = __toESM(require("mongoose"), 1);
+var import_mongoose45 = __toESM(require("mongoose"), 1);
 var import_zod18 = require("zod");
 var router16 = (0, import_express17.Router)();
 var createTaskSchema = import_zod18.z.object({
@@ -8954,7 +9027,7 @@ var taskWriteRateLimiter = (0, import_express_rate_limit16.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId12(id) {
-  if (!import_mongoose44.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose45.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -8984,7 +9057,7 @@ router16.get(
       }
       if (projectId) {
         ensureValidObjectId12(projectId);
-        filter.projectId = new import_mongoose44.default.Types.ObjectId(projectId);
+        filter.projectId = new import_mongoose45.default.Types.ObjectId(projectId);
       }
       if (assigneeUserId) {
         filter.assigneeUserId = assigneeUserId;
@@ -9024,7 +9097,7 @@ router16.post(
       }
       const createPayload = { ...payload, reporterUserId: req.user.id };
       if (payload.projectId) {
-        createPayload.projectId = new import_mongoose44.default.Types.ObjectId(payload.projectId);
+        createPayload.projectId = new import_mongoose45.default.Types.ObjectId(payload.projectId);
       }
       const created = await TaskModel.create(createPayload);
       res.status(201).json(created.toObject());
@@ -9071,7 +9144,7 @@ router16.patch(
       const updatePayload = { ...payload };
       const unsetFields = {};
       if (payload.projectId) {
-        updatePayload.projectId = new import_mongoose44.default.Types.ObjectId(payload.projectId);
+        updatePayload.projectId = new import_mongoose45.default.Types.ObjectId(payload.projectId);
       } else if (payload.projectId === null) {
         delete updatePayload.projectId;
         unsetFields.projectId = "";
@@ -9202,7 +9275,7 @@ var taskRoutes = router16;
 // src/modules/todo/todo.routes.ts
 var import_express_rate_limit17 = __toESM(require("express-rate-limit"), 1);
 var import_express18 = require("express");
-var import_mongoose45 = __toESM(require("mongoose"), 1);
+var import_mongoose46 = __toESM(require("mongoose"), 1);
 var import_zod19 = require("zod");
 var router17 = (0, import_express18.Router)();
 var createTodoSchema = import_zod19.z.object({
@@ -9232,7 +9305,7 @@ var todoWriteRateLimiter = (0, import_express_rate_limit17.default)({
   legacyHeaders: false
 });
 function ensureValidObjectId13(id) {
-  if (!import_mongoose45.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose46.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -9481,8 +9554,8 @@ function normalizePhoneNumber(phone, defaultCountryCode = "91") {
 }
 
 // src/modules/whatsapp/models/wa-opt-out.model.ts
-var import_mongoose46 = __toESM(require("mongoose"), 1);
-var waOptOutSchema = new import_mongoose46.Schema(
+var import_mongoose47 = __toESM(require("mongoose"), 1);
+var waOptOutSchema = new import_mongoose47.Schema(
   {
     phone: { type: String, required: true, index: true },
     clientCode: { type: String, required: true, index: true },
@@ -9492,11 +9565,11 @@ var waOptOutSchema = new import_mongoose46.Schema(
   { timestamps: false }
 );
 waOptOutSchema.index({ phone: 1, clientCode: 1 }, { unique: true });
-var WaOptOutModel = import_mongoose46.default.models.WaOptOut ?? import_mongoose46.default.model("WaOptOut", waOptOutSchema);
+var WaOptOutModel = import_mongoose47.default.models.WaOptOut ?? import_mongoose47.default.model("WaOptOut", waOptOutSchema);
 
 // src/modules/whatsapp/models/campaign.model.ts
-var import_mongoose47 = __toESM(require("mongoose"), 1);
-var CampaignSchema = new import_mongoose47.Schema(
+var import_mongoose48 = __toESM(require("mongoose"), 1);
+var CampaignSchema = new import_mongoose48.Schema(
   {
     name: {
       type: String,
@@ -9522,7 +9595,7 @@ var CampaignSchema = new import_mongoose47.Schema(
       index: true
     },
     defaultTemplateId: {
-      type: import_mongoose47.Schema.Types.ObjectId,
+      type: import_mongoose48.Schema.Types.ObjectId,
       ref: "WhatsAppTemplate",
       // TODO: CHANGE THIS - Update to your template model
       default: null
@@ -9536,7 +9609,7 @@ var CampaignSchema = new import_mongoose47.Schema(
       totalFailed: { type: Number, default: 0, min: 0 }
     },
     createdBy: {
-      type: import_mongoose47.Schema.Types.ObjectId,
+      type: import_mongoose48.Schema.Types.ObjectId,
       ref: "User"
       // TODO: CHANGE THIS - Update if your user model has different name
     },
@@ -9552,14 +9625,14 @@ var CampaignSchema = new import_mongoose47.Schema(
 CampaignSchema.index({ createdAt: -1 });
 CampaignSchema.index({ createdBy: 1 });
 CampaignSchema.index({ status: 1, createdAt: -1 });
-var CampaignModel = import_mongoose47.default.models.Campaign ?? import_mongoose47.default.model("Campaign", CampaignSchema);
+var CampaignModel = import_mongoose48.default.models.Campaign ?? import_mongoose48.default.model("Campaign", CampaignSchema);
 
 // src/modules/whatsapp/models/bulk-messaging.model.ts
-var import_mongoose48 = __toESM(require("mongoose"), 1);
-var BulkMessagingSchema = new import_mongoose48.Schema(
+var import_mongoose49 = __toESM(require("mongoose"), 1);
+var BulkMessagingSchema = new import_mongoose49.Schema(
   {
     campaignId: {
-      type: import_mongoose48.Schema.Types.ObjectId,
+      type: import_mongoose49.Schema.Types.ObjectId,
       ref: "Campaign",
       required: true,
       index: true
@@ -9571,7 +9644,7 @@ var BulkMessagingSchema = new import_mongoose48.Schema(
       maxlength: 200
     },
     templateId: {
-      type: import_mongoose48.Schema.Types.ObjectId,
+      type: import_mongoose49.Schema.Types.ObjectId,
       ref: "WhatsAppTemplate",
       // TODO: CHANGE THIS
       required: true
@@ -9582,14 +9655,14 @@ var BulkMessagingSchema = new import_mongoose48.Schema(
         enum: ["all", "prospect", "organic", "member", "premium"],
         default: ["all"]
       },
-      audienceTypeIds: [{ type: import_mongoose48.Schema.Types.ObjectId, ref: "AudienceType" }],
-      cityIds: [{ type: import_mongoose48.Schema.Types.ObjectId, ref: "City" }],
+      audienceTypeIds: [{ type: import_mongoose49.Schema.Types.ObjectId, ref: "AudienceType" }],
+      cityIds: [{ type: import_mongoose49.Schema.Types.ObjectId, ref: "City" }],
       // TODO: CHANGE THIS
-      stateIds: [{ type: import_mongoose48.Schema.Types.ObjectId, ref: "State" }],
+      stateIds: [{ type: import_mongoose49.Schema.Types.ObjectId, ref: "State" }],
       // TODO: CHANGE THIS
-      industryIds: [{ type: import_mongoose48.Schema.Types.ObjectId, ref: "Industry" }],
+      industryIds: [{ type: import_mongoose49.Schema.Types.ObjectId, ref: "Industry" }],
       // TODO: CHANGE THIS
-      planIds: [{ type: import_mongoose48.Schema.Types.ObjectId, ref: "PlanMaster" }],
+      planIds: [{ type: import_mongoose49.Schema.Types.ObjectId, ref: "PlanMaster" }],
       // TODO: CHANGE THIS
       profileCompleteness: {
         type: String,
@@ -9638,7 +9711,7 @@ var BulkMessagingSchema = new import_mongoose48.Schema(
     startedAt: { type: Date, default: null },
     completedAt: { type: Date, default: null },
     createdBy: {
-      type: import_mongoose48.Schema.Types.ObjectId,
+      type: import_mongoose49.Schema.Types.ObjectId,
       ref: "User"
       // TODO: CHANGE THIS - Update if your user model has different name
     }
@@ -9650,20 +9723,20 @@ var BulkMessagingSchema = new import_mongoose48.Schema(
 );
 BulkMessagingSchema.index({ status: 1, scheduledFor: 1 });
 BulkMessagingSchema.index({ campaignId: 1, createdAt: -1 });
-var BulkMessagingModel = import_mongoose48.default.models.BulkMessaging ?? import_mongoose48.default.model("BulkMessaging", BulkMessagingSchema);
+var BulkMessagingModel = import_mongoose49.default.models.BulkMessaging ?? import_mongoose49.default.model("BulkMessaging", BulkMessagingSchema);
 
 // src/modules/whatsapp/models/message-queue.model.ts
-var import_mongoose49 = __toESM(require("mongoose"), 1);
-var MessageQueueSchema = new import_mongoose49.Schema(
+var import_mongoose50 = __toESM(require("mongoose"), 1);
+var MessageQueueSchema = new import_mongoose50.Schema(
   {
     bulkMessagingId: {
-      type: import_mongoose49.Schema.Types.ObjectId,
+      type: import_mongoose50.Schema.Types.ObjectId,
       ref: "BulkMessaging",
       required: true,
       index: true
     },
     userId: {
-      type: import_mongoose49.Schema.Types.ObjectId,
+      type: import_mongoose50.Schema.Types.ObjectId,
       ref: "RegisteredUser",
       // TODO: CHANGE THIS - Update to your user model
       required: true
@@ -9686,7 +9759,7 @@ var MessageQueueSchema = new import_mongoose49.Schema(
       trim: true,
       maxlength: 10
     },
-    components: [{ type: import_mongoose49.Schema.Types.Mixed }],
+    components: [{ type: import_mongoose50.Schema.Types.Mixed }],
     status: {
       type: String,
       enum: ["pending", "processing", "sent", "delivered", "read", "failed", "skipped"],
@@ -9764,11 +9837,11 @@ MessageQueueSchema.index({ bulkMessagingId: 1, status: 1 });
 MessageQueueSchema.index({ messageId: 1 }, { sparse: true });
 MessageQueueSchema.index({ userId: 1, createdAt: -1 });
 MessageQueueSchema.index({ bulkMessagingId: 1, userId: 1 }, { unique: true });
-var MessageQueueModel = import_mongoose49.default.models.MessageQueue ?? import_mongoose49.default.model("MessageQueue", MessageQueueSchema);
+var MessageQueueModel = import_mongoose50.default.models.MessageQueue ?? import_mongoose50.default.model("MessageQueue", MessageQueueSchema);
 
 // src/modules/whatsapp/models/template.model.ts
-var import_mongoose50 = __toESM(require("mongoose"), 1);
-var WhatsAppTemplateSchema = new import_mongoose50.Schema(
+var import_mongoose51 = __toESM(require("mongoose"), 1);
+var WhatsAppTemplateSchema = new import_mongoose51.Schema(
   {
     name: {
       type: String,
@@ -9843,7 +9916,7 @@ var WhatsAppTemplateSchema = new import_mongoose50.Schema(
         phoneNumber: { type: String, maxlength: 20 }
       }
     ],
-    components: [{ type: import_mongoose50.Schema.Types.Mixed }],
+    components: [{ type: import_mongoose51.Schema.Types.Mixed }],
     variables: [
       {
         position: {
@@ -9907,11 +9980,11 @@ WhatsAppTemplateSchema.index({ status: 1 });
 WhatsAppTemplateSchema.index({ category: 1 });
 WhatsAppTemplateSchema.index({ metaStatus: 1 });
 WhatsAppTemplateSchema.index({ metaStatus: 1, category: 1, status: 1 });
-var WhatsAppTemplateModel = import_mongoose50.default.models.WhatsAppTemplate ?? import_mongoose50.default.model("WhatsAppTemplate", WhatsAppTemplateSchema);
+var WhatsAppTemplateModel = import_mongoose51.default.models.WhatsAppTemplate ?? import_mongoose51.default.model("WhatsAppTemplate", WhatsAppTemplateSchema);
 
 // src/modules/whatsapp/models/audience-type.model.ts
-var import_mongoose51 = __toESM(require("mongoose"), 1);
-var AudienceTypeSchema = new import_mongoose51.Schema(
+var import_mongoose52 = __toESM(require("mongoose"), 1);
+var AudienceTypeSchema = new import_mongoose52.Schema(
   {
     name: {
       type: String,
@@ -9938,13 +10011,13 @@ var AudienceTypeSchema = new import_mongoose51.Schema(
         enum: ["any", "complete", "incomplete"],
         default: "any"
       },
-      cityIds: [{ type: import_mongoose51.Schema.Types.ObjectId, ref: "City" }],
+      cityIds: [{ type: import_mongoose52.Schema.Types.ObjectId, ref: "City" }],
       // TODO: CHANGE THIS
-      stateIds: [{ type: import_mongoose51.Schema.Types.ObjectId, ref: "State" }],
+      stateIds: [{ type: import_mongoose52.Schema.Types.ObjectId, ref: "State" }],
       // TODO: CHANGE THIS
-      industryIds: [{ type: import_mongoose51.Schema.Types.ObjectId, ref: "Industry" }],
+      industryIds: [{ type: import_mongoose52.Schema.Types.ObjectId, ref: "Industry" }],
       // TODO: CHANGE THIS
-      planIds: [{ type: import_mongoose51.Schema.Types.ObjectId, ref: "PlanMaster" }],
+      planIds: [{ type: import_mongoose52.Schema.Types.ObjectId, ref: "PlanMaster" }],
       // TODO: CHANGE THIS
       planExpiryBefore: { type: Date, default: null },
       planExpiryAfter: { type: Date, default: null },
@@ -9969,7 +10042,7 @@ var AudienceTypeSchema = new import_mongoose51.Schema(
       default: null
     },
     createdBy: {
-      type: import_mongoose51.Schema.Types.ObjectId,
+      type: import_mongoose52.Schema.Types.ObjectId,
       ref: "User"
       // TODO: CHANGE THIS - Update if your user model has different name
     }
@@ -9982,14 +10055,14 @@ var AudienceTypeSchema = new import_mongoose51.Schema(
 AudienceTypeSchema.index({ isActive: 1 });
 AudienceTypeSchema.index({ name: 1 }, { unique: true });
 AudienceTypeSchema.index({ createdAt: -1 });
-var AudienceTypeModel = import_mongoose51.default.models.AudienceType ?? import_mongoose51.default.model("AudienceType", AudienceTypeSchema);
+var AudienceTypeModel = import_mongoose52.default.models.AudienceType ?? import_mongoose52.default.model("AudienceType", AudienceTypeSchema);
 
 // src/modules/whatsapp/models/whatsapp-log.model.ts
-var import_mongoose52 = __toESM(require("mongoose"), 1);
-var WhatsAppLogSchema = new import_mongoose52.Schema(
+var import_mongoose53 = __toESM(require("mongoose"), 1);
+var WhatsAppLogSchema = new import_mongoose53.Schema(
   {
     userId: {
-      type: import_mongoose52.Schema.Types.ObjectId,
+      type: import_mongoose53.Schema.Types.ObjectId,
       ref: "RegisteredUser"
       // TODO: CHANGE THIS
     },
@@ -10010,7 +10083,7 @@ var WhatsAppLogSchema = new import_mongoose52.Schema(
         type: String,
         enum: ["ConnectionRequest", "Meeting", "BulkMessaging"]
       },
-      id: { type: import_mongoose52.Schema.Types.ObjectId }
+      id: { type: import_mongoose53.Schema.Types.ObjectId }
     },
     messageId: {
       type: String,
@@ -10055,11 +10128,11 @@ WhatsAppLogSchema.index({ phoneNumber: 1, sentAt: -1 });
 WhatsAppLogSchema.index({ "relatedTo.model": 1, "relatedTo.id": 1 });
 WhatsAppLogSchema.index({ sentAt: -1 });
 WhatsAppLogSchema.index({ status: 1, sentAt: -1 });
-var WhatsAppLogModel = import_mongoose52.default.models.WhatsAppLog ?? import_mongoose52.default.model("WhatsAppLog", WhatsAppLogSchema);
+var WhatsAppLogModel = import_mongoose53.default.models.WhatsAppLog ?? import_mongoose53.default.model("WhatsAppLog", WhatsAppLogSchema);
 
 // src/modules/whatsapp/models/trigger.model.ts
-var import_mongoose53 = __toESM(require("mongoose"), 1);
-var WhatsAppTriggerSchema = new import_mongoose53.Schema(
+var import_mongoose54 = __toESM(require("mongoose"), 1);
+var WhatsAppTriggerSchema = new import_mongoose54.Schema(
   {
     eventKey: {
       type: String,
@@ -10081,7 +10154,7 @@ var WhatsAppTriggerSchema = new import_mongoose53.Schema(
       maxlength: 500
     },
     template: {
-      type: import_mongoose53.Schema.Types.ObjectId,
+      type: import_mongoose54.Schema.Types.ObjectId,
       ref: "WhatsAppTemplate",
       // TODO: CHANGE THIS
       default: null
@@ -10125,11 +10198,11 @@ var WhatsAppTriggerSchema = new import_mongoose53.Schema(
 WhatsAppTriggerSchema.index({ eventKey: 1 }, { unique: true });
 WhatsAppTriggerSchema.index({ isActive: 1 });
 WhatsAppTriggerSchema.index({ template: 1 });
-var WhatsAppTriggerModel = import_mongoose53.default.models.WhatsAppTrigger ?? import_mongoose53.default.model("WhatsAppTrigger", WhatsAppTriggerSchema);
+var WhatsAppTriggerModel = import_mongoose54.default.models.WhatsAppTrigger ?? import_mongoose54.default.model("WhatsAppTrigger", WhatsAppTriggerSchema);
 
 // src/modules/whatsapp/models/conversation.model.ts
-var import_mongoose54 = __toESM(require("mongoose"), 1);
-var WAConversationSchema = new import_mongoose54.Schema(
+var import_mongoose55 = __toESM(require("mongoose"), 1);
+var WAConversationSchema = new import_mongoose55.Schema(
   {
     phoneNumber: {
       type: String,
@@ -10164,7 +10237,7 @@ var WAConversationSchema = new import_mongoose54.Schema(
       default: 0,
       min: 0
     },
-    campaignIds: [{ type: import_mongoose54.Schema.Types.ObjectId }],
+    campaignIds: [{ type: import_mongoose55.Schema.Types.ObjectId }],
     status: {
       type: String,
       enum: ["active", "archived"],
@@ -10185,14 +10258,14 @@ WAConversationSchema.index({ status: 1, lastMessageAt: -1 });
 WAConversationSchema.index({ campaignIds: 1 });
 WAConversationSchema.index({ lastInboundAt: -1 });
 WAConversationSchema.index({ status: 1, unreadCount: 1 });
-var WAConversationModel = import_mongoose54.default.models.WAConversation ?? import_mongoose54.default.model("WAConversation", WAConversationSchema);
+var WAConversationModel = import_mongoose55.default.models.WAConversation ?? import_mongoose55.default.model("WAConversation", WAConversationSchema);
 
 // src/modules/whatsapp/models/message.model.ts
-var import_mongoose55 = __toESM(require("mongoose"), 1);
-var WAMessageSchema = new import_mongoose55.Schema(
+var import_mongoose56 = __toESM(require("mongoose"), 1);
+var WAMessageSchema = new import_mongoose56.Schema(
   {
     conversationId: {
-      type: import_mongoose55.Schema.Types.ObjectId,
+      type: import_mongoose56.Schema.Types.ObjectId,
       ref: "WAConversation",
       required: true,
       index: true
@@ -10234,7 +10307,7 @@ var WAMessageSchema = new import_mongoose55.Schema(
       latitude: { type: Number },
       longitude: { type: Number },
       templateName: { type: String, maxlength: 100 },
-      templateData: { type: import_mongoose55.Schema.Types.Mixed }
+      templateData: { type: import_mongoose56.Schema.Types.Mixed }
     },
     replyToWaMessageId: {
       type: String,
@@ -10242,7 +10315,7 @@ var WAMessageSchema = new import_mongoose55.Schema(
       maxlength: 100
     },
     replyToId: {
-      type: import_mongoose55.Schema.Types.ObjectId,
+      type: import_mongoose56.Schema.Types.ObjectId,
       ref: "WAMessage",
       default: null
     },
@@ -10283,7 +10356,7 @@ WAMessageSchema.index({ conversationId: 1, timestamp: -1 });
 WAMessageSchema.index({ waMessageId: 1 }, { sparse: true, unique: true });
 WAMessageSchema.index({ replyToWaMessageId: 1 }, { sparse: true });
 WAMessageSchema.index({ direction: 1, status: 1, timestamp: -1 });
-var WAMessageModel = import_mongoose55.default.models.WAMessage ?? import_mongoose55.default.model("WAMessage", WAMessageSchema);
+var WAMessageModel = import_mongoose56.default.models.WAMessage ?? import_mongoose56.default.model("WAMessage", WAMessageSchema);
 
 // src/modules/whatsapp/types.ts
 var META_ERROR_CODES = {
@@ -10359,11 +10432,11 @@ var validateSignature = (rawBody, signature) => {
   }
 };
 var handleStatusUpdate = async (req, res) => {
-  res.status(200).send("OK");
   const rawBody = req.body;
   const signature = req.headers["x-hub-signature-256"];
   if (!validateSignature(rawBody, signature)) {
     logger.error("[WhatsApp Webhook] Invalid signature, ignoring payload");
+    res.status(200).send("OK");
     return;
   }
   let body;
@@ -10371,6 +10444,7 @@ var handleStatusUpdate = async (req, res) => {
     body = JSON.parse(rawBody.toString("utf8"));
   } catch (err) {
     logger.error("[WhatsApp Webhook] Failed to parse JSON payload", { error: err });
+    res.status(200).send("OK");
     return;
   }
   try {
@@ -10398,6 +10472,7 @@ var handleStatusUpdate = async (req, res) => {
   } catch (err) {
     logger.error("[WhatsApp Webhook] Processing error", { error: err });
   }
+  res.status(200).send("OK");
 };
 var processStatusUpdate = async (statusUpdate, io) => {
   const { id: messageId, status, timestamp, errors } = statusUpdate;
@@ -10683,12 +10758,12 @@ var classifyError = (errorCode) => {
   if (permanent.includes(code)) return "permanent";
   const policy = [META_ERROR_CODES.POLICY_VIOLATION, META_ERROR_CODES.SPAM_RATE_LIMIT];
   if (policy.includes(code)) return "policy";
-  const rateLimit24 = [
+  const rateLimit30 = [
     META_ERROR_CODES.RATE_LIMIT_HIT,
     META_ERROR_CODES.TOO_MANY_MESSAGES,
     META_ERROR_CODES.CLOUD_API_RATE_LIMIT
   ];
-  if (rateLimit24.includes(code)) return "rate_limit";
+  if (rateLimit30.includes(code)) return "rate_limit";
   const transient = [
     META_ERROR_CODES.TEMPORARY_ERROR,
     META_ERROR_CODES.TEMPLATE_PAUSED,
@@ -10721,7 +10796,7 @@ var whatsappWebhookRoutes = router18;
 var import_express20 = require("express");
 
 // src/modules/whatsapp/campaign.handlers.ts
-var import_mongoose56 = __toESM(require("mongoose"), 1);
+var import_mongoose57 = __toESM(require("mongoose"), 1);
 var import_zod20 = require("zod");
 var createCampaignSchema = import_zod20.z.object({
   name: import_zod20.z.string().min(1).max(200).trim(),
@@ -10745,7 +10820,7 @@ var updateCampaignSchema = import_zod20.z.object({
   tags: import_zod20.z.array(import_zod20.z.string().max(50)).max(20).optional()
 });
 function ensureValidObjectId14(id) {
-  if (!import_mongoose56.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose57.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid campaign ID format");
   }
 }
@@ -10765,7 +10840,7 @@ var createCampaign = async (req, res, next) => {
       description: payload.description || "",
       defaultTemplateId: payload.defaultTemplateId || null,
       tags: payload.tags || [],
-      createdBy: new import_mongoose56.default.Types.ObjectId(req.user.id),
+      createdBy: new import_mongoose57.default.Types.ObjectId(req.user.id),
       status: "draft",
       stats: {
         totalBulkMessagings: 0,
@@ -10988,7 +11063,7 @@ var campaignRoutes = router19;
 var import_express21 = require("express");
 
 // src/modules/whatsapp/bulk-messaging.handlers.ts
-var import_mongoose57 = __toESM(require("mongoose"), 1);
+var import_mongoose58 = __toESM(require("mongoose"), 1);
 var import_zod21 = require("zod");
 var createBulkMessagingSchema = import_zod21.z.object({
   name: import_zod21.z.string().min(1).max(200).trim(),
@@ -11043,7 +11118,7 @@ var analyticsQuerySchema = import_zod21.z.object({
   endDate: import_zod21.z.coerce.date().optional()
 });
 function ensureValidObjectId15(id) {
-  if (!import_mongoose57.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose58.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid ID format");
   }
 }
@@ -11077,7 +11152,7 @@ var createBulkMessaging = async (req, res, next) => {
       audienceFilter: payload.audienceFilter || {},
       variableOverrides: payload.variableOverrides || [],
       scheduledFor: payload.scheduledFor || null,
-      createdBy: new import_mongoose57.default.Types.ObjectId(req.user.id),
+      createdBy: new import_mongoose58.default.Types.ObjectId(req.user.id),
       status: "draft",
       stats: {
         totalRecipients: 0,
@@ -11118,7 +11193,7 @@ var updateBulkMessaging = async (req, res, next) => {
       if (!templateExists) {
         throw new AppError(404, ERROR_CODES.NOT_FOUND, "Template not found");
       }
-      bulkMessaging.templateId = new import_mongoose57.default.Types.ObjectId(payload.templateId);
+      bulkMessaging.templateId = new import_mongoose58.default.Types.ObjectId(payload.templateId);
     }
     if (payload.name) bulkMessaging.name = payload.name;
     if (payload.audienceFilter !== void 0) bulkMessaging.audienceFilter = payload.audienceFilter;
@@ -11177,7 +11252,7 @@ var listBulkMessagings = async (req, res, next) => {
     ensureValidObjectId15(req.params.campaignId);
     const params = listBulkMessagingsSchema.parse(req.body ?? {});
     const pipeline = [];
-    const baseMatch = { campaignId: new import_mongoose57.default.Types.ObjectId(req.params.campaignId) };
+    const baseMatch = { campaignId: new import_mongoose58.default.Types.ObjectId(req.params.campaignId) };
     if (params.status) baseMatch.status = params.status;
     pipeline.push({ $match: baseMatch });
     if (params.match) {
@@ -11340,7 +11415,7 @@ var retryFailedMessages = async (req, res, next) => {
     ensureValidObjectId15(req.params.id);
     const result = await MessageQueueModel.updateMany(
       {
-        bulkMessagingId: new import_mongoose57.default.Types.ObjectId(req.params.id),
+        bulkMessagingId: new import_mongoose58.default.Types.ObjectId(req.params.id),
         status: "failed",
         errorCategory: { $in: ["transient", "rate_limit"] },
         retryCount: { $lt: 3 }
@@ -11387,7 +11462,7 @@ var getFailedMessages = async (req, res, next) => {
     ensureValidObjectId15(req.params.id);
     const params = getFailedMessagesSchema.parse(req.body ?? {});
     const filter = {
-      bulkMessagingId: new import_mongoose57.default.Types.ObjectId(req.params.id),
+      bulkMessagingId: new import_mongoose58.default.Types.ObjectId(req.params.id),
       status: "failed"
     };
     if (params.errorCategory) filter.errorCategory = params.errorCategory;
@@ -11516,7 +11591,7 @@ var getCampaignAnalytics = async (req, res, next) => {
     const bmFilter = {};
     if (params.campaignId) {
       ensureValidObjectId15(params.campaignId);
-      bmFilter.campaignId = new import_mongoose57.default.Types.ObjectId(params.campaignId);
+      bmFilter.campaignId = new import_mongoose58.default.Types.ObjectId(params.campaignId);
     }
     const bulkMessagings = await BulkMessagingModel.find(bmFilter).select("_id").lean();
     const bmIds = bulkMessagings.map((bm) => bm._id);
@@ -11685,7 +11760,7 @@ var bulkMessagingRoutes = router20;
 var import_express22 = require("express");
 
 // src/modules/whatsapp/template.handlers.ts
-var import_mongoose58 = __toESM(require("mongoose"), 1);
+var import_mongoose59 = __toESM(require("mongoose"), 1);
 var import_zod22 = require("zod");
 var createTemplateSchema = import_zod22.z.object({
   name: import_zod22.z.string().min(1).max(200).trim(),
@@ -11730,7 +11805,7 @@ var updateTemplateSchema = import_zod22.z.object({
   status: import_zod22.z.string().optional()
 });
 function ensureValidObjectId16(id) {
-  if (!import_mongoose58.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose59.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid ID format");
   }
 }
@@ -12038,7 +12113,7 @@ var templateRoutes = router21;
 var import_express23 = require("express");
 
 // src/modules/whatsapp/trigger.handlers.ts
-var import_mongoose59 = __toESM(require("mongoose"), 1);
+var import_mongoose60 = __toESM(require("mongoose"), 1);
 var import_zod23 = require("zod");
 var triggerCache = null;
 var triggerCacheExpiry = 0;
@@ -12091,7 +12166,7 @@ var updateTriggerSchema = import_zod23.z.object({
   })).optional()
 });
 function ensureValidObjectId17(id) {
-  if (!import_mongoose59.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose60.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid ID format");
   }
 }
@@ -12259,7 +12334,7 @@ var triggerRoutes = router22;
 var import_express24 = require("express");
 
 // src/modules/whatsapp/inbox.handlers.ts
-var import_mongoose60 = __toESM(require("mongoose"), 1);
+var import_mongoose61 = __toESM(require("mongoose"), 1);
 var import_zod24 = require("zod");
 var getConversationsSchema = import_zod24.z.object({
   page: import_zod24.z.coerce.number().int().min(1).default(1),
@@ -12290,7 +12365,7 @@ function isWithin24hWindow(lastInboundAt) {
   return Date.now() < windowEnd;
 }
 async function resolveConversation(id) {
-  if (import_mongoose60.default.Types.ObjectId.isValid(id) && !id.startsWith("user_")) {
+  if (import_mongoose61.default.Types.ObjectId.isValid(id) && !id.startsWith("user_")) {
     return WAConversationModel.findById(id);
   }
   logger.warn("[WhatsApp Inbox] user_ prefix resolution not yet implemented - update resolveConversation()");
@@ -12365,7 +12440,7 @@ var getConversations = async (req, res, next) => {
     if (params.campaignId) {
       const match2 = {
         status: "active",
-        campaignIds: new import_mongoose60.default.Types.ObjectId(params.campaignId)
+        campaignIds: new import_mongoose61.default.Types.ObjectId(params.campaignId)
       };
       if (params.search) {
         match2.$or = [
@@ -12426,7 +12501,7 @@ var getConversationDetail = async (req, res, next) => {
     if (id.startsWith("user_")) {
       throw new AppError(501, ERROR_CODES.INTERNAL_ERROR, "User contact resolution not yet implemented. Update getConversationDetail handler.");
     }
-    if (!import_mongoose60.default.Types.ObjectId.isValid(id)) {
+    if (!import_mongoose61.default.Types.ObjectId.isValid(id)) {
       throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid conversation ID");
     }
     const conversation = await WAConversationModel.findById(id).lean();
@@ -12458,10 +12533,10 @@ var getMessages = async (req, res, next) => {
       res.status(200).json({ data: [], hasMore: false });
       return;
     }
-    if (!import_mongoose60.default.Types.ObjectId.isValid(id)) {
+    if (!import_mongoose61.default.Types.ObjectId.isValid(id)) {
       throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid conversation ID");
     }
-    const query = { conversationId: new import_mongoose60.default.Types.ObjectId(id) };
+    const query = { conversationId: new import_mongoose61.default.Types.ObjectId(id) };
     if (params.before) {
       query.timestamp = { $lt: new Date(params.before) };
     }
@@ -12667,13 +12742,14 @@ var inboxRoutes = router23;
 
 // src/modules/rbac/rbac.routes.ts
 var import_bcryptjs4 = __toESM(require("bcryptjs"), 1);
-var import_mongoose62 = __toESM(require("mongoose"), 1);
+var import_mongoose63 = __toESM(require("mongoose"), 1);
 var import_express25 = require("express");
 var import_zod25 = require("zod");
+init_audit_log_service();
 
 // src/modules/rbac/rbac-task.model.ts
-var import_mongoose61 = __toESM(require("mongoose"), 1);
-var rbacTaskSchema = new import_mongoose61.Schema(
+var import_mongoose62 = __toESM(require("mongoose"), 1);
+var rbacTaskSchema = new import_mongoose62.Schema(
   {
     clientCode: { type: String, required: true },
     title: { type: String, required: true, maxlength: 200 },
@@ -12690,8 +12766,8 @@ var rbacTaskSchema = new import_mongoose61.Schema(
       required: true,
       default: "MEDIUM"
     },
-    assignedTo: { type: import_mongoose61.Schema.Types.ObjectId, ref: "Employee", required: true },
-    assignedBy: { type: import_mongoose61.Schema.Types.ObjectId, ref: "Employee", required: true },
+    assignedTo: { type: import_mongoose62.Schema.Types.ObjectId, ref: "Employee", required: true },
+    assignedBy: { type: import_mongoose62.Schema.Types.ObjectId, ref: "Employee", required: true },
     dueDate: { type: Date, default: null },
     createdBy: { type: String, required: true },
     updatedBy: { type: String, required: true }
@@ -12700,19 +12776,30 @@ var rbacTaskSchema = new import_mongoose61.Schema(
 );
 rbacTaskSchema.index({ clientCode: 1, assignedTo: 1 });
 rbacTaskSchema.index({ clientCode: 1, assignedBy: 1 });
-var RbacTaskModel = import_mongoose61.default.models.RbacTask ?? import_mongoose61.default.model("RbacTask", rbacTaskSchema);
+var RbacTaskModel = import_mongoose62.default.models.RbacTask ?? import_mongoose62.default.model("RbacTask", rbacTaskSchema);
 
 // src/modules/rbac/rbac.routes.ts
 var router24 = (0, import_express25.Router)();
-var AUTH = [authenticateJwt, requireRole(["super_admin", "admin"])];
 var SUPER_ONLY = [authenticateJwt, requireRole(["super_admin"])];
+var RBAC_MENUS = "/rbac/menus";
+var RBAC_ACTIONS = "/rbac/actions";
+var RBAC_ROLES = "/rbac/roles";
+var RBAC_EMPLOYEES = "/rbac/employees";
+var RBAC_TASKS = "/rbac/tasks";
+function guard(menuUrl, action) {
+  return [
+    authenticateJwt,
+    requireRole(["super_admin", "admin"]),
+    requireRbacPermission(menuUrl, action)
+  ];
+}
 function buildSearchRegex(raw) {
   const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(escaped, "i");
 }
 async function getEmployeeForUser(userId) {
   return EmployeeModel.findOne(
-    { userId: new import_mongoose62.default.Types.ObjectId(userId) }
+    { userId: new import_mongoose63.default.Types.ObjectId(userId) }
   ).lean().exec();
 }
 async function getDescendantIds(employeeId) {
@@ -12722,26 +12809,75 @@ async function getDescendantIds(employeeId) {
   ).lean().exec();
   return descendants.map((d) => d._id);
 }
-async function validateStrictSubset(actorEmployeeId, newPermissions) {
+async function loadActorGrantSet(actorEmployeeId) {
   const actor = await EmployeeModel.findById(actorEmployeeId).lean().exec();
   if (!actor?.roleId) {
-    throw new AppError(403, ERROR_CODES.FORBIDDEN, "You have no role assigned, cannot create/update roles.");
+    throw new AppError(
+      403,
+      ERROR_CODES.FORBIDDEN,
+      "You have no role assigned \u2014 ask a super admin to assign one before managing roles or employees."
+    );
   }
   const actorRole = await RoleMasterModel.findById(actor.roleId).lean().exec();
   if (!actorRole) {
-    throw new AppError(403, ERROR_CODES.FORBIDDEN, "Your assigned role could not be found.");
+    throw new AppError(
+      403,
+      ERROR_CODES.FORBIDDEN,
+      "Your assigned role no longer exists \u2014 ask a super admin to reassign one."
+    );
   }
-  const actorGranted = new Set(
+  return new Set(
     actorRole.permissions.filter((p) => p.granted).map((p) => `${p.menuId}:${p.actionTypeId}`)
   );
+}
+function assertPermissionsWithinCeiling(actorGrants, newPermissions) {
   for (const perm of newPermissions) {
-    if (perm.granted && !actorGranted.has(`${perm.menuId}:${perm.actionTypeId}`)) {
+    if (perm.granted && !actorGrants.has(`${perm.menuId}:${perm.actionTypeId}`)) {
       throw new AppError(
         403,
         ERROR_CODES.FORBIDDEN,
         "Cannot save role: contains permissions exceeding your current access level."
       );
     }
+  }
+}
+async function validateStrictSubset(actorEmployeeId, newPermissions) {
+  assertPermissionsWithinCeiling(await loadActorGrantSet(actorEmployeeId), newPermissions);
+}
+async function assertRoleAssignable(actorEmployeeId, roleId) {
+  if (!import_mongoose63.default.Types.ObjectId.isValid(roleId)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid role id.");
+  }
+  const role = await RoleMasterModel.findOne({
+    _id: roleId,
+    clientCode: env.CLIENT_CODE,
+    isActive: true
+  }).lean().exec();
+  if (!role) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Role not found or inactive.");
+  const actorGrants = await loadActorGrantSet(actorEmployeeId);
+  const exceeding = (role.permissions ?? []).filter(
+    (p) => p.granted && !actorGrants.has(`${p.menuId}:${p.actionTypeId}`)
+  );
+  if (exceeding.length > 0) {
+    throw new AppError(
+      403,
+      ERROR_CODES.FORBIDDEN,
+      `Cannot assign "${role.roleName}": it grants ${exceeding.length} permission(s) beyond your own access level.`
+    );
+  }
+}
+async function auditRoleAssignment(options) {
+  try {
+    await auditLogService.log({
+      action: "rbac.employee.role_assigned",
+      entity: "Employee",
+      entityId: options.employeeId,
+      userId: options.actorUserId,
+      userEmail: options.actorEmail,
+      before: { roleId: options.before ? String(options.before) : null },
+      after: { roleId: options.after ? String(options.after) : null }
+    });
+  } catch {
   }
 }
 var menuMasterSchema2 = import_zod25.z.object({
@@ -12753,7 +12889,7 @@ var menuMasterSchema2 = import_zod25.z.object({
   icon: import_zod25.z.string().max(100).default(""),
   isActive: import_zod25.z.boolean().default(true)
 });
-router24.get("/api/v1/rbac/menus", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/menus", ...guard(RBAC_MENUS, "read"), async (req, res, next) => {
   try {
     const search = req.query.search?.trim();
     const filter = { clientCode: env.CLIENT_CODE };
@@ -12770,7 +12906,7 @@ router24.get("/api/v1/rbac/menus", ...AUTH, async (req, res, next) => {
 router24.post("/api/v1/rbac/menus", ...SUPER_ONLY, async (req, res, next) => {
   try {
     const data = menuMasterSchema2.parse(req.body);
-    const parentId = data.parentMenu ? new import_mongoose62.default.Types.ObjectId(data.parentMenu) : null;
+    const parentId = data.parentMenu ? new import_mongoose63.default.Types.ObjectId(data.parentMenu) : null;
     if (parentId) {
       const parent = await MenuMasterModel.findOne({ _id: parentId, clientCode: env.CLIENT_CODE }).lean().exec();
       if (!parent) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Parent menu not found.");
@@ -12793,7 +12929,7 @@ router24.post("/api/v1/rbac/menus", ...SUPER_ONLY, async (req, res, next) => {
 router24.put("/api/v1/rbac/menus/:id", ...SUPER_ONLY, async (req, res, next) => {
   try {
     const data = menuMasterSchema2.partial().parse(req.body);
-    const parentId = data.parentMenu !== void 0 ? data.parentMenu ? new import_mongoose62.default.Types.ObjectId(data.parentMenu) : null : void 0;
+    const parentId = data.parentMenu !== void 0 ? data.parentMenu ? new import_mongoose63.default.Types.ObjectId(data.parentMenu) : null : void 0;
     if (parentId) {
       if (parentId.toString() === req.params.id) {
         throw new AppError(400, ERROR_CODES.BAD_REQUEST, "A menu cannot be its own parent.");
@@ -12820,7 +12956,7 @@ router24.put("/api/v1/rbac/menus/:id", ...SUPER_ONLY, async (req, res, next) => 
 router24.delete("/api/v1/rbac/menus/:id", ...SUPER_ONLY, async (req, res, next) => {
   try {
     const hasChildren = await MenuMasterModel.exists({
-      parentMenu: new import_mongoose62.default.Types.ObjectId(req.params.id),
+      parentMenu: new import_mongoose63.default.Types.ObjectId(req.params.id),
       clientCode: env.CLIENT_CODE
     });
     if (hasChildren) {
@@ -12837,7 +12973,7 @@ var actionTypeSchema2 = import_zod25.z.object({
   actionCode: import_zod25.z.string().min(1).max(30).toUpperCase(),
   isActive: import_zod25.z.boolean().default(true)
 });
-router24.get("/api/v1/rbac/actions", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/actions", ...guard(RBAC_ACTIONS, "read"), async (req, res, next) => {
   try {
     const search = req.query.search?.trim();
     const filter = { clientCode: env.CLIENT_CODE };
@@ -12892,7 +13028,7 @@ var roleMasterCreateSchema = import_zod25.z.object({
   permissions: import_zod25.z.array(rolePermissionEntrySchema).default([]),
   isActive: import_zod25.z.boolean().default(true)
 });
-router24.get("/api/v1/rbac/roles", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/roles", ...guard(RBAC_ROLES, "read"), async (req, res, next) => {
   try {
     const search = req.query.search?.trim();
     const searchFilter = search ? { $or: [{ roleName: buildSearchRegex(search) }] } : {};
@@ -12918,7 +13054,7 @@ router24.get("/api/v1/rbac/roles", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.post("/api/v1/rbac/roles", ...AUTH, async (req, res, next) => {
+router24.post("/api/v1/rbac/roles", ...guard(RBAC_ROLES, "write"), async (req, res, next) => {
   try {
     const data = roleMasterCreateSchema.parse(req.body);
     const isSuperAdmin = req.user.role === "super_admin";
@@ -12940,7 +13076,7 @@ router24.post("/api/v1/rbac/roles", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.put("/api/v1/rbac/roles/:id", ...AUTH, async (req, res, next) => {
+router24.put("/api/v1/rbac/roles/:id", ...guard(RBAC_ROLES, "edit"), async (req, res, next) => {
   try {
     const data = roleMasterCreateSchema.partial().parse(req.body);
     const isSuperAdmin = req.user.role === "super_admin";
@@ -12952,6 +13088,13 @@ router24.put("/api/v1/rbac/roles/:id", ...AUTH, async (req, res, next) => {
     if (!isSuperAdmin) {
       const employee = await getEmployeeForUser(req.user.id);
       if (!employee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
+      if (employee.roleId && String(employee.roleId) === existing._id.toString()) {
+        throw new AppError(
+          403,
+          ERROR_CODES.FORBIDDEN,
+          "You cannot edit the role you are assigned to. Ask a super admin."
+        );
+      }
       const descendantIds = await getDescendantIds(employee._id);
       const visibleCreators = [
         employee._id.toString(),
@@ -12974,7 +13117,7 @@ router24.put("/api/v1/rbac/roles/:id", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.delete("/api/v1/rbac/roles/:id", ...AUTH, async (req, res, next) => {
+router24.delete("/api/v1/rbac/roles/:id", ...guard(RBAC_ROLES, "delete"), async (req, res, next) => {
   try {
     const isSuperAdmin = req.user.role === "super_admin";
     const existing = await RoleMasterModel.findOne({
@@ -12995,7 +13138,7 @@ router24.delete("/api/v1/rbac/roles/:id", ...AUTH, async (req, res, next) => {
       }
     }
     const assignedCount = await EmployeeModel.countDocuments({
-      roleId: new import_mongoose62.default.Types.ObjectId(req.params.id)
+      roleId: new import_mongoose63.default.Types.ObjectId(req.params.id)
     });
     if (assignedCount > 0) {
       throw new AppError(
@@ -13010,7 +13153,7 @@ router24.delete("/api/v1/rbac/roles/:id", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.get("/api/v1/rbac/roles/:id/impact", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/roles/:id/impact", ...guard(RBAC_ROLES, "read"), async (req, res, next) => {
   try {
     const roleId = req.params.id;
     const removingParam = req.query.removing;
@@ -13023,12 +13166,12 @@ router24.get("/api/v1/rbac/roles/:id/impact", ...AUTH, async (req, res, next) =>
       });
       affectedRoles = await RoleMasterModel.countDocuments({
         clientCode: env.CLIENT_CODE,
-        _id: { $ne: new import_mongoose62.default.Types.ObjectId(roleId) },
+        _id: { $ne: new import_mongoose63.default.Types.ObjectId(roleId) },
         $or: orClauses
       });
     }
     const affectedEmployees = await EmployeeModel.countDocuments({
-      roleId: new import_mongoose62.default.Types.ObjectId(roleId)
+      roleId: new import_mongoose63.default.Types.ObjectId(roleId)
     });
     res.json({ affectedRoles, affectedEmployees });
   } catch (error) {
@@ -13051,7 +13194,7 @@ var employeeUpdateSchema = import_zod25.z.object({
   contact: import_zod25.z.string().max(20).optional(),
   roleId: import_zod25.z.string().nullable().optional()
 });
-router24.get("/api/v1/rbac/employees", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/employees", ...guard(RBAC_EMPLOYEES, "read"), async (req, res, next) => {
   try {
     const search = req.query.search?.trim();
     const searchFilter = search ? {
@@ -13080,51 +13223,40 @@ router24.get("/api/v1/rbac/employees", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.post("/api/v1/rbac/employees", ...AUTH, async (req, res, next) => {
+router24.post("/api/v1/rbac/employees", ...guard(RBAC_EMPLOYEES, "write"), async (req, res, next) => {
   try {
     const data = employeeCreateSchema.parse(req.body);
     const isSuperAdmin = req.user.role === "super_admin";
     let createdBy = null;
     let ancestorIds = [];
     let resolvedParentId = null;
+    const actor = isSuperAdmin ? null : await getEmployeeForUser(req.user.id);
+    if (!isSuperAdmin && !actor) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
+    }
     if (data.parentEmployeeId) {
       const parent = await EmployeeModel.findById(data.parentEmployeeId).lean().exec();
       if (!parent) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Parent employee not found.");
-      if (!isSuperAdmin) {
-        const currentEmployee = await getEmployeeForUser(req.user.id);
-        if (!currentEmployee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
-        const descendantIds = await getDescendantIds(currentEmployee._id);
+      if (actor) {
+        const descendantIds = await getDescendantIds(actor._id);
         const allowedParentIds = [
-          currentEmployee._id.toString(),
+          actor._id.toString(),
           ...descendantIds.map((id) => id.toString())
         ];
         if (!allowedParentIds.includes(parent._id.toString())) {
           throw new AppError(403, ERROR_CODES.FORBIDDEN, "Cannot assign this parent: outside your hierarchy.");
         }
-        createdBy = currentEmployee._id.toString();
+        createdBy = actor._id.toString();
       }
       ancestorIds = [...parent.ancestorIds, parent._id];
       resolvedParentId = parent._id;
-    } else if (!isSuperAdmin) {
-      const currentEmployee = await getEmployeeForUser(req.user.id);
-      if (!currentEmployee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
-      createdBy = currentEmployee._id.toString();
-      ancestorIds = [...currentEmployee.ancestorIds, currentEmployee._id];
-      resolvedParentId = currentEmployee._id;
+    } else if (actor) {
+      createdBy = actor._id.toString();
+      ancestorIds = [...actor.ancestorIds, actor._id];
+      resolvedParentId = actor._id;
     }
-    if (data.roleId && !isSuperAdmin) {
-      const actor = await getEmployeeForUser(req.user.id);
-      if (actor) {
-        const descendantIds = await getDescendantIds(actor._id);
-        const visibleRoleCreators = [
-          actor._id.toString(),
-          ...descendantIds.map((id) => id.toString())
-        ];
-        const role = await RoleMasterModel.findById(data.roleId).lean().exec();
-        if (role?.createdBy && !visibleRoleCreators.includes(role.createdBy)) {
-          throw new AppError(403, ERROR_CODES.FORBIDDEN, "Cannot assign a role outside your visible roles.");
-        }
-      }
+    if (data.roleId && actor) {
+      await assertRoleAssignable(actor._id.toString(), data.roleId);
     }
     const existingUser = await UserModel.findOne({ email: data.emailOffice }).lean().exec();
     if (existingUser) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "A user with this email already exists.");
@@ -13141,19 +13273,28 @@ router24.post("/api/v1/rbac/employees", ...AUTH, async (req, res, next) => {
       emailOffice: data.emailOffice,
       department: data.department,
       contact: data.contact,
-      roleId: data.roleId ? new import_mongoose62.default.Types.ObjectId(data.roleId) : null,
+      roleId: data.roleId ? new import_mongoose63.default.Types.ObjectId(data.roleId) : null,
       parentEmployeeId: resolvedParentId,
       ancestorIds,
       isActive: true,
       createdBy,
       updatedBy: req.user.id
     });
+    if (data.roleId) {
+      await auditRoleAssignment({
+        actorUserId: req.user.id,
+        actorEmail: req.user.email,
+        employeeId: String(employee._id),
+        before: null,
+        after: data.roleId
+      });
+    }
     res.status(201).json(employee);
   } catch (error) {
     next(error);
   }
 });
-router24.put("/api/v1/rbac/employees/:id", ...AUTH, async (req, res, next) => {
+router24.put("/api/v1/rbac/employees/:id", ...guard(RBAC_EMPLOYEES, "edit"), async (req, res, next) => {
   try {
     const data = employeeUpdateSchema.parse(req.body);
     const isSuperAdmin = req.user.role === "super_admin";
@@ -13165,23 +13306,32 @@ router24.put("/api/v1/rbac/employees/:id", ...AUTH, async (req, res, next) => {
     if (!isSuperAdmin) {
       const currentEmployee = await getEmployeeForUser(req.user.id);
       if (!currentEmployee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
+      const isSelf = currentEmployee._id.toString() === existing._id.toString();
       const descendantIds = await getDescendantIds(currentEmployee._id);
-      const visibleIds = [
-        currentEmployee._id.toString(),
-        ...descendantIds.map((id) => id.toString())
-      ];
-      if (!visibleIds.includes(existing._id.toString())) {
+      const subordinateIds = descendantIds.map((id) => id.toString());
+      if (!isSelf && !subordinateIds.includes(existing._id.toString())) {
         throw new AppError(403, ERROR_CODES.FORBIDDEN, "You do not have permission to edit this employee.");
       }
-      if (data.roleId) {
-        const role = await RoleMasterModel.findById(data.roleId).lean().exec();
-        const visibleRoleCreators = [
-          currentEmployee._id.toString(),
-          ...descendantIds.map((id) => id.toString())
-        ];
-        if (role?.createdBy && !visibleRoleCreators.includes(role.createdBy)) {
-          throw new AppError(403, ERROR_CODES.FORBIDDEN, "Cannot assign a role outside your visible roles.");
+      if (isSelf) {
+        const requestedRole = data.roleId === void 0 ? void 0 : data.roleId ? String(data.roleId) : null;
+        const currentRole = existing.roleId ? String(existing.roleId) : null;
+        if (requestedRole !== void 0 && requestedRole !== currentRole) {
+          throw new AppError(
+            403,
+            ERROR_CODES.FORBIDDEN,
+            "You cannot change your own role. Ask a super admin or your manager."
+          );
         }
+        if (data.emailOffice !== void 0 && data.emailOffice !== existing.emailOffice) {
+          throw new AppError(
+            403,
+            ERROR_CODES.FORBIDDEN,
+            "You cannot change your own office email \u2014 it is also your login address."
+          );
+        }
+      }
+      if (data.roleId) {
+        await assertRoleAssignable(currentEmployee._id.toString(), data.roleId);
       }
     }
     const updatePayload = {
@@ -13191,7 +13341,7 @@ router24.put("/api/v1/rbac/employees/:id", ...AUTH, async (req, res, next) => {
       updatedBy: req.user.id
     };
     if (data.roleId !== void 0) {
-      updatePayload.roleId = data.roleId ? new import_mongoose62.default.Types.ObjectId(data.roleId) : null;
+      updatePayload.roleId = data.roleId ? new import_mongoose63.default.Types.ObjectId(data.roleId) : null;
     }
     if (data.emailOffice !== void 0) {
       updatePayload.emailOffice = data.emailOffice;
@@ -13204,21 +13354,34 @@ router24.put("/api/v1/rbac/employees/:id", ...AUTH, async (req, res, next) => {
     if (data.emailOffice && data.emailOffice !== existing.emailOffice) {
       await UserModel.findByIdAndUpdate(existing.userId, { email: data.emailOffice });
     }
+    if (data.roleId !== void 0) {
+      const before = existing.roleId ? String(existing.roleId) : null;
+      const after = data.roleId ? String(data.roleId) : null;
+      if (before !== after) {
+        await auditRoleAssignment({
+          actorUserId: req.user.id,
+          actorEmail: req.user.email,
+          employeeId: String(existing._id),
+          before,
+          after
+        });
+      }
+    }
     res.json(updated);
   } catch (error) {
     next(error);
   }
 });
-router24.get("/api/v1/rbac/employees/:id/cascade-impact", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/employees/:id/cascade-impact", ...guard(RBAC_EMPLOYEES, "read"), async (req, res, next) => {
   try {
-    const empId = new import_mongoose62.default.Types.ObjectId(req.params.id);
+    const empId = new import_mongoose63.default.Types.ObjectId(req.params.id);
     const descendantIds = await getDescendantIds(empId);
     res.json({ affectedCount: descendantIds.length });
   } catch (error) {
     next(error);
   }
 });
-router24.put("/api/v1/rbac/employees/:id/status", ...AUTH, async (req, res, next) => {
+router24.put("/api/v1/rbac/employees/:id/status", ...guard(RBAC_EMPLOYEES, "edit"), async (req, res, next) => {
   try {
     const { isActive } = import_zod25.z.object({ isActive: import_zod25.z.boolean() }).parse(req.body);
     const isSuperAdmin = req.user.role === "super_admin";
@@ -13235,12 +13398,12 @@ router24.put("/api/v1/rbac/employees/:id/status", ...AUTH, async (req, res, next
         throw new AppError(403, ERROR_CODES.FORBIDDEN, "You can only change status of your sub-employees.");
       }
     }
-    const empId = new import_mongoose62.default.Types.ObjectId(req.params.id);
+    const empId = new import_mongoose63.default.Types.ObjectId(req.params.id);
     const descendantIds = await getDescendantIds(empId);
     const allAffected = [empId, ...descendantIds];
     await EmployeeModel.updateMany(
       { _id: { $in: allAffected } },
-      { isActive, updatedBy: req.user.id }
+      { isActive, accessLocked: !isActive, updatedBy: req.user.id }
     );
     res.json({ success: true, affected: allAffected.length });
   } catch (error) {
@@ -13262,7 +13425,7 @@ var taskUpdateSchema = import_zod25.z.object({
   priority: import_zod25.z.enum(["LOW", "MEDIUM", "HIGH"]).optional(),
   dueDate: import_zod25.z.string().nullable().optional()
 });
-router24.get("/api/v1/rbac/tasks", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/tasks", ...guard(RBAC_TASKS, "read"), async (req, res, next) => {
   try {
     const search = req.query.search?.trim();
     const isSuperAdmin = req.user.role === "super_admin";
@@ -13298,7 +13461,7 @@ router24.get("/api/v1/rbac/tasks", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.get("/api/v1/rbac/tasks/assignees", ...AUTH, async (req, res, next) => {
+router24.get("/api/v1/rbac/tasks/assignees", ...guard(RBAC_TASKS, "read"), async (req, res, next) => {
   try {
     const isSuperAdmin = req.user.role === "super_admin";
     if (isSuperAdmin) {
@@ -13318,7 +13481,7 @@ router24.get("/api/v1/rbac/tasks/assignees", ...AUTH, async (req, res, next) => 
     next(error);
   }
 });
-router24.post("/api/v1/rbac/tasks", ...AUTH, async (req, res, next) => {
+router24.post("/api/v1/rbac/tasks", ...guard(RBAC_TASKS, "write"), async (req, res, next) => {
   try {
     const data = taskCreateSchema.parse(req.body);
     const isSuperAdmin = req.user.role === "super_admin";
@@ -13333,14 +13496,14 @@ router24.post("/api/v1/rbac/tasks", ...AUTH, async (req, res, next) => {
         throw new AppError(403, ERROR_CODES.FORBIDDEN, "Tasks can only be assigned to sub-employees (downward only).");
       }
     }
-    const assignedByEmpId = currentEmployee?._id ?? new import_mongoose62.default.Types.ObjectId();
+    const assignedByEmpId = currentEmployee?._id ?? new import_mongoose63.default.Types.ObjectId();
     const task = await RbacTaskModel.create({
       clientCode: env.CLIENT_CODE,
       title: data.title,
       description: data.description,
       status: data.status,
       priority: data.priority,
-      assignedTo: new import_mongoose62.default.Types.ObjectId(data.assignedTo),
+      assignedTo: new import_mongoose63.default.Types.ObjectId(data.assignedTo),
       assignedBy: assignedByEmpId,
       dueDate: data.dueDate ? new Date(data.dueDate) : null,
       createdBy: req.user.id,
@@ -13351,7 +13514,7 @@ router24.post("/api/v1/rbac/tasks", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.put("/api/v1/rbac/tasks/:id", ...AUTH, async (req, res, next) => {
+router24.put("/api/v1/rbac/tasks/:id", ...guard(RBAC_TASKS, "edit"), async (req, res, next) => {
   try {
     const data = taskUpdateSchema.parse(req.body);
     const existing = await RbacTaskModel.findOne({
@@ -13386,7 +13549,7 @@ router24.put("/api/v1/rbac/tasks/:id", ...AUTH, async (req, res, next) => {
     next(error);
   }
 });
-router24.delete("/api/v1/rbac/tasks/:id", ...AUTH, async (req, res, next) => {
+router24.delete("/api/v1/rbac/tasks/:id", ...guard(RBAC_TASKS, "delete"), async (req, res, next) => {
   try {
     const existing = await RbacTaskModel.findOne({
       _id: req.params.id,
@@ -13411,12 +13574,75 @@ router24.delete("/api/v1/rbac/tasks/:id", ...AUTH, async (req, res, next) => {
 // src/modules/portfolio/portfolio-projects.routes.ts
 var import_express_rate_limit19 = __toESM(require("express-rate-limit"), 1);
 var import_express26 = require("express");
-var import_mongoose64 = __toESM(require("mongoose"), 1);
+var import_mongoose65 = __toESM(require("mongoose"), 1);
 var import_zod26 = require("zod");
 
+// src/core/revalidate/revalidate.service.ts
+function revalidateWebsite(paths) {
+  const url = env.WEBSITE_REVALIDATE_URL;
+  const secret = env.REVALIDATE_SECRET;
+  if (!url || !secret) {
+    logger.debug("Skipping revalidation \u2014 WEBSITE_REVALIDATE_URL/REVALIDATE_SECRET unset");
+    return;
+  }
+  void fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-revalidate-secret": secret },
+    body: JSON.stringify({ paths }),
+    signal: AbortSignal.timeout(5e3)
+  }).then(async (response) => {
+    if (!response.ok) {
+      logger.warn("Revalidation rejected by the website", {
+        status: response.status,
+        paths
+      });
+      return;
+    }
+    logger.info("Revalidated website paths", { paths });
+  }).catch((error) => {
+    logger.warn("Revalidation request failed", {
+      paths,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+}
+var SETTINGS_PATHS = [
+  "/",
+  "/about",
+  "/services",
+  "/how-we-work",
+  "/team",
+  "/work",
+  "/contact"
+];
+var TEAM_PATHS = ["/", "/team"];
+var PROJECT_PATHS = ["/", "/work", "/projects"];
+var SERVICE_PATHS = ["/", "/services", "/contact"];
+var SOCIAL_PROOF_PATHS = ["/", "/about", "/work"];
+var FAQ_PATHS = ["/faq"];
+function postPathsFor(slug) {
+  return ["/insights", "/insights/rss.xml", "/sitemap.xml", `/insights/${slug}`];
+}
+function legalPathsFor(slug) {
+  return [
+    `/legal/${slug}`,
+    // The footer builds its link list from the published documents, and the
+    // sitemap enumerates them, so both go stale on a publish/unpublish.
+    "/sitemap.xml",
+    ...SETTINGS_PATHS,
+    ...slug === "privacy" ? ["/privacy"] : [],
+    ...slug === "terms" ? ["/terms"] : []
+  ];
+}
+
 // src/modules/portfolio/portfolio-projects.models.ts
-var import_mongoose63 = __toESM(require("mongoose"), 1);
-var portfolioProjectSchema = new import_mongoose63.Schema(
+var import_mongoose64 = __toESM(require("mongoose"), 1);
+var sectionHeadingSchema = {
+  eyebrow: { type: String, default: "" },
+  title: { type: String, default: "" },
+  lead: { type: String, default: "" }
+};
+var portfolioProjectSchema = new import_mongoose64.Schema(
   {
     slug: { type: String, required: true, unique: true, trim: true, lowercase: true },
     title: { type: String, required: true, trim: true },
@@ -13427,6 +13653,24 @@ var portfolioProjectSchema = new import_mongoose63.Schema(
     client: { type: String, default: "", trim: true },
     timeframe: { type: String, default: "", trim: true },
     role: { type: String, default: "", trim: true },
+    intro: { type: String, default: "" },
+    heroMeta: {
+      type: [{ label: { type: String, default: "" }, value: { type: String, default: "" } }],
+      default: []
+    },
+    sectionHeadings: {
+      type: {
+        stack: { type: sectionHeadingSchema, default: void 0 },
+        roi: { type: sectionHeadingSchema, default: void 0 },
+        problem: { type: sectionHeadingSchema, default: void 0 },
+        solution: { type: sectionHeadingSchema, default: void 0 },
+        screens: { type: sectionHeadingSchema, default: void 0 },
+        features: { type: sectionHeadingSchema, default: void 0 },
+        workflow: { type: sectionHeadingSchema, default: void 0 }
+      },
+      default: {}
+    },
+    screenLabelPrefix: { type: String, default: "" },
     stack: { type: [String], default: [] },
     techStack: { type: [String], default: [] },
     liveUrl: { type: String, trim: true },
@@ -13434,11 +13678,20 @@ var portfolioProjectSchema = new import_mongoose63.Schema(
     problem: { type: String, default: "" },
     solution: { type: String, default: "" },
     features: {
-      type: [{ title: { type: String }, description: { type: String } }],
+      type: [{
+        title: { type: String },
+        description: { type: String },
+        icon: { type: String, default: "" },
+        accent: { type: String, default: "" }
+      }],
       default: []
     },
     gallery: {
-      type: [{ src: { type: String }, caption: { type: String } }],
+      type: [{
+        src: { type: String },
+        caption: { type: String },
+        label: { type: String, default: "" }
+      }],
       default: []
     },
     roi: {
@@ -13484,9 +13737,10 @@ var portfolioProjectSchema = new import_mongoose63.Schema(
   { timestamps: true }
 );
 portfolioProjectSchema.index({ isActive: 1, order: 1 });
-var PortfolioProjectModel = import_mongoose63.default.models.PortfolioProject ?? import_mongoose63.default.model("PortfolioProject", portfolioProjectSchema);
+var PortfolioProjectModel = import_mongoose64.default.models.PortfolioProject ?? import_mongoose64.default.model("PortfolioProject", portfolioProjectSchema);
 
 // src/modules/portfolio/portfolio-projects.routes.ts
+var ADMIN_ROLES = ["super_admin", "admin"];
 var router25 = (0, import_express26.Router)();
 var writeRateLimiter = (0, import_express_rate_limit19.default)({ windowMs: 60 * 1e3, max: 60, standardHeaders: true, legacyHeaders: false });
 var readRateLimiter = (0, import_express_rate_limit19.default)({ windowMs: 60 * 1e3, max: 120, standardHeaders: true, legacyHeaders: false });
@@ -13495,12 +13749,39 @@ function escapeRegex(s) {
 }
 var slugParamSchema = import_zod26.z.string().min(1).max(200).regex(/^[a-z0-9-]+$/);
 function ensureValidObjectId18(id) {
-  if (!import_mongoose64.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose65.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
-var featureSchema = import_zod26.z.object({ title: import_zod26.z.string(), description: import_zod26.z.string() });
-var gallerySchema = import_zod26.z.object({ src: import_zod26.z.string(), caption: import_zod26.z.string() });
+var featureSchema = import_zod26.z.object({
+  title: import_zod26.z.string(),
+  description: import_zod26.z.string(),
+  icon: import_zod26.z.string().max(60).default(""),
+  accent: import_zod26.z.string().max(40).default("")
+});
+var gallerySchema = import_zod26.z.object({
+  src: import_zod26.z.string(),
+  caption: import_zod26.z.string(),
+  label: import_zod26.z.string().max(120).default("")
+});
+var heroMetaSchema = import_zod26.z.object({
+  label: import_zod26.z.string().max(60).default(""),
+  value: import_zod26.z.string().max(200).default("")
+});
+var sectionHeadingSchema2 = import_zod26.z.object({
+  eyebrow: import_zod26.z.string().max(80).default(""),
+  title: import_zod26.z.string().max(200).default(""),
+  lead: import_zod26.z.string().max(600).default("")
+});
+var sectionHeadingsSchema = import_zod26.z.object({
+  stack: sectionHeadingSchema2.optional(),
+  roi: sectionHeadingSchema2.optional(),
+  problem: sectionHeadingSchema2.optional(),
+  solution: sectionHeadingSchema2.optional(),
+  screens: sectionHeadingSchema2.optional(),
+  features: sectionHeadingSchema2.optional(),
+  workflow: sectionHeadingSchema2.optional()
+}).default({});
 var codeSnippetSchema = import_zod26.z.object({ language: import_zod26.z.string(), label: import_zod26.z.string(), code: import_zod26.z.string() });
 var roiItemSchema = import_zod26.z.object({
   value: import_zod26.z.string().default(""),
@@ -13529,6 +13810,10 @@ var createProjectSchema2 = import_zod26.z.object({
   client: import_zod26.z.string().max(300).default(""),
   timeframe: import_zod26.z.string().max(200).default(""),
   role: import_zod26.z.string().max(300).default(""),
+  intro: import_zod26.z.string().max(2e3).default(""),
+  heroMeta: import_zod26.z.array(heroMetaSchema).max(6).default([]),
+  sectionHeadings: sectionHeadingsSchema,
+  screenLabelPrefix: import_zod26.z.string().max(40).default(""),
   stack: import_zod26.z.array(import_zod26.z.string()).default([]),
   techStack: import_zod26.z.array(import_zod26.z.string()).default([]),
   liveUrl: import_zod26.z.string().url().max(2e3).optional().or(import_zod26.z.literal("")),
@@ -13558,9 +13843,14 @@ var listByParamsQuerySchema = import_zod26.z.object({
   category: import_zod26.z.string().max(100).optional(),
   year: import_zod26.z.string().max(20).optional(),
   client: import_zod26.z.string().max(300).optional(),
+  // The client sends `?stack=React,Node` (lib/api.ts joins the array), so a
+  // lone string has to be SPLIT, not wrapped. Wrapping produced
+  // { $in: ["React,Node"] }, which matches no document — every multi-value
+  // stack filter silently returned zero results.
   stack: import_zod26.z.union([import_zod26.z.string(), import_zod26.z.array(import_zod26.z.string())]).optional().transform((v) => {
     if (!v) return void 0;
-    return Array.isArray(v) ? v : [v];
+    const values = (Array.isArray(v) ? v : v.split(",")).map((item) => item.trim()).filter(Boolean);
+    return values.length > 0 ? values : void 0;
   }),
   search: import_zod26.z.string().max(200).optional()
 });
@@ -13613,7 +13903,7 @@ router25.get("/api/v1/public/portfolio/projects/:slug", readRateLimiter, async (
     next(error);
   }
 });
-router25.get("/api/v1/portfolio/projects", authenticateJwt, async (req, res, next) => {
+router25.get("/api/v1/portfolio/projects", authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/projects", "read"), async (req, res, next) => {
   try {
     const { page, limit } = listQuerySchema2.parse(req.query ?? {});
     const skip = (page - 1) * limit;
@@ -13626,10 +13916,11 @@ router25.get("/api/v1/portfolio/projects", authenticateJwt, async (req, res, nex
     next(error);
   }
 });
-router25.post("/api/v1/portfolio/projects", writeRateLimiter, authenticateJwt, async (req, res, next) => {
+router25.post("/api/v1/portfolio/projects", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/projects", "write"), async (req, res, next) => {
   try {
     const payload = createProjectSchema2.parse(req.body ?? {});
     const created = await PortfolioProjectModel.create(payload);
+    revalidateWebsite([...PROJECT_PATHS, `/projects/${created.slug}`]);
     res.status(201).json(created.toObject());
   } catch (error) {
     if (error instanceof import_zod26.z.ZodError) {
@@ -13639,7 +13930,7 @@ router25.post("/api/v1/portfolio/projects", writeRateLimiter, authenticateJwt, a
     next(error);
   }
 });
-router25.get("/api/v1/portfolio/projects/:id", authenticateJwt, async (req, res, next) => {
+router25.get("/api/v1/portfolio/projects/:id", authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/projects", "read"), async (req, res, next) => {
   try {
     ensureValidObjectId18(req.params.id);
     const project = await PortfolioProjectModel.findById(req.params.id).lean().exec();
@@ -13649,12 +13940,14 @@ router25.get("/api/v1/portfolio/projects/:id", authenticateJwt, async (req, res,
     next(error);
   }
 });
-router25.patch("/api/v1/portfolio/projects/:id", writeRateLimiter, authenticateJwt, async (req, res, next) => {
+router25.patch("/api/v1/portfolio/projects/:id", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/projects", "edit"), async (req, res, next) => {
   try {
     ensureValidObjectId18(req.params.id);
     const payload = updateProjectSchema2.parse(req.body ?? {});
     const updated = await PortfolioProjectModel.findByIdAndUpdate(req.params.id, { $set: payload }, { new: true, runValidators: true }).lean().exec();
     if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Project not found");
+    const updatedSlug = updated.slug;
+    revalidateWebsite(updatedSlug ? [...PROJECT_PATHS, `/projects/${updatedSlug}`] : PROJECT_PATHS);
     res.json(updated);
   } catch (error) {
     if (error instanceof import_zod26.z.ZodError) {
@@ -13664,12 +13957,13 @@ router25.patch("/api/v1/portfolio/projects/:id", writeRateLimiter, authenticateJ
     next(error);
   }
 });
-router25.delete("/api/v1/portfolio/projects/:id", writeRateLimiter, authenticateJwt, async (req, res, next) => {
+router25.delete("/api/v1/portfolio/projects/:id", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/projects", "delete"), async (req, res, next) => {
   try {
     ensureValidObjectId18(req.params.id);
     const project = await PortfolioProjectModel.findById(req.params.id).exec();
     if (!project) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Project not found");
     await PortfolioProjectModel.deleteOne({ _id: project._id }).exec();
+    revalidateWebsite([...PROJECT_PATHS, `/projects/${project.slug}`]);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -13680,12 +13974,12 @@ var portfolioProjectsRoutes = router25;
 // src/modules/portfolio/portfolio-team.routes.ts
 var import_express_rate_limit20 = __toESM(require("express-rate-limit"), 1);
 var import_express27 = require("express");
-var import_mongoose66 = __toESM(require("mongoose"), 1);
+var import_mongoose67 = __toESM(require("mongoose"), 1);
 var import_zod27 = require("zod");
 
 // src/modules/portfolio/portfolio-team.models.ts
-var import_mongoose65 = __toESM(require("mongoose"), 1);
-var portfolioMemberSchema = new import_mongoose65.Schema(
+var import_mongoose66 = __toESM(require("mongoose"), 1);
+var portfolioMemberSchema = new import_mongoose66.Schema(
   {
     id: { type: String, required: true, unique: true, trim: true },
     slug: { type: String, required: true, unique: true, trim: true, lowercase: true },
@@ -13739,15 +14033,16 @@ var portfolioMemberSchema = new import_mongoose65.Schema(
   { timestamps: true }
 );
 portfolioMemberSchema.index({ isActive: 1, order: 1 });
-var PortfolioMemberModel = import_mongoose65.default.models.PortfolioMember ?? import_mongoose65.default.model("PortfolioMember", portfolioMemberSchema);
+var PortfolioMemberModel = import_mongoose66.default.models.PortfolioMember ?? import_mongoose66.default.model("PortfolioMember", portfolioMemberSchema);
 
 // src/modules/portfolio/portfolio-team.routes.ts
+var ADMIN_ROLES2 = ["super_admin", "admin"];
 var router26 = (0, import_express27.Router)();
 var writeRateLimiter2 = (0, import_express_rate_limit20.default)({ windowMs: 60 * 1e3, max: 60, standardHeaders: true, legacyHeaders: false });
 var readRateLimiter2 = (0, import_express_rate_limit20.default)({ windowMs: 60 * 1e3, max: 120, standardHeaders: true, legacyHeaders: false });
 var slugParamSchema2 = import_zod27.z.string().min(1).max(200).regex(/^[a-z0-9-]+$/);
 function ensureValidObjectId19(id) {
-  if (!import_mongoose66.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose67.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
@@ -13763,7 +14058,14 @@ var socialsSchema = import_zod27.z.object({
   portfolio: urlOrEmpty
 });
 var createMemberSchema = import_zod27.z.object({
-  id: import_zod27.z.string().min(1).max(50).trim(),
+  /**
+   * Optional, because the admin form has no input for it and never sent one —
+   * so every create from the panel failed validation with a bare 400 and no
+   * indication of which field was missing. It stays in the schema for the seed
+   * and for API clients that do supply a display ref; when absent the route
+   * derives one below.
+   */
+  id: import_zod27.z.string().min(1).max(50).trim().optional(),
   slug: import_zod27.z.string().min(1).max(200).trim().toLowerCase(),
   name: import_zod27.z.string().min(1).max(200).trim(),
   role: import_zod27.z.string().min(1).max(200).trim(),
@@ -13819,7 +14121,7 @@ router26.get("/api/v1/public/portfolio/team/:slug", readRateLimiter2, async (req
     next(error);
   }
 });
-router26.get("/api/v1/portfolio/team", authenticateJwt, async (req, res, next) => {
+router26.get("/api/v1/portfolio/team", authenticateJwt, requireRole(ADMIN_ROLES2), requireRbacPermission("/portfolio/team", "read"), async (req, res, next) => {
   try {
     const { page, limit } = listQuerySchema3.parse(req.query ?? {});
     const skip = (page - 1) * limit;
@@ -13832,10 +14134,14 @@ router26.get("/api/v1/portfolio/team", authenticateJwt, async (req, res, next) =
     next(error);
   }
 });
-router26.post("/api/v1/portfolio/team", writeRateLimiter2, authenticateJwt, async (req, res, next) => {
+router26.post("/api/v1/portfolio/team", writeRateLimiter2, authenticateJwt, requireRole(ADMIN_ROLES2), requireRbacPermission("/portfolio/team", "write"), async (req, res, next) => {
   try {
     const payload = createMemberSchema.parse(req.body ?? {});
-    const created = await PortfolioMemberModel.create(payload);
+    const created = await PortfolioMemberModel.create({
+      ...payload,
+      id: payload.id ?? payload.slug
+    });
+    revalidateWebsite(TEAM_PATHS);
     res.status(201).json(created.toObject());
   } catch (error) {
     if (error instanceof import_zod27.z.ZodError) {
@@ -13845,7 +14151,7 @@ router26.post("/api/v1/portfolio/team", writeRateLimiter2, authenticateJwt, asyn
     next(error);
   }
 });
-router26.get("/api/v1/portfolio/team/:id", authenticateJwt, async (req, res, next) => {
+router26.get("/api/v1/portfolio/team/:id", authenticateJwt, requireRole(ADMIN_ROLES2), requireRbacPermission("/portfolio/team", "read"), async (req, res, next) => {
   try {
     ensureValidObjectId19(req.params.id);
     const member = await PortfolioMemberModel.findById(req.params.id).lean().exec();
@@ -13855,12 +14161,13 @@ router26.get("/api/v1/portfolio/team/:id", authenticateJwt, async (req, res, nex
     next(error);
   }
 });
-router26.patch("/api/v1/portfolio/team/:id", writeRateLimiter2, authenticateJwt, async (req, res, next) => {
+router26.patch("/api/v1/portfolio/team/:id", writeRateLimiter2, authenticateJwt, requireRole(ADMIN_ROLES2), requireRbacPermission("/portfolio/team", "edit"), async (req, res, next) => {
   try {
     ensureValidObjectId19(req.params.id);
     const payload = updateMemberSchema.parse(req.body ?? {});
     const updated = await PortfolioMemberModel.findByIdAndUpdate(req.params.id, { $set: payload }, { new: true, runValidators: true }).lean().exec();
     if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Team member not found");
+    revalidateWebsite(TEAM_PATHS);
     res.json(updated);
   } catch (error) {
     if (error instanceof import_zod27.z.ZodError) {
@@ -13870,12 +14177,13 @@ router26.patch("/api/v1/portfolio/team/:id", writeRateLimiter2, authenticateJwt,
     next(error);
   }
 });
-router26.delete("/api/v1/portfolio/team/:id", writeRateLimiter2, authenticateJwt, async (req, res, next) => {
+router26.delete("/api/v1/portfolio/team/:id", writeRateLimiter2, authenticateJwt, requireRole(ADMIN_ROLES2), requireRbacPermission("/portfolio/team", "delete"), async (req, res, next) => {
   try {
     ensureValidObjectId19(req.params.id);
     const member = await PortfolioMemberModel.findById(req.params.id).exec();
     if (!member) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Team member not found");
     await PortfolioMemberModel.deleteOne({ _id: member._id }).exec();
+    revalidateWebsite(TEAM_PATHS);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -13889,8 +14197,13 @@ var import_express28 = require("express");
 var import_zod28 = require("zod");
 
 // src/modules/portfolio/portfolio-settings.models.ts
-var import_mongoose67 = __toESM(require("mongoose"), 1);
-var portfolioSettingsSchema = new import_mongoose67.Schema(
+var import_mongoose68 = __toESM(require("mongoose"), 1);
+var pageCopySchema = {
+  eyebrow: { type: String, default: "" },
+  title: { type: String, default: "" },
+  lead: { type: String, default: "" }
+};
+var portfolioSettingsSchema = new import_mongoose68.Schema(
   {
     hero: {
       tagline: { type: String, default: "" },
@@ -13911,7 +14224,7 @@ var portfolioSettingsSchema = new import_mongoose67.Schema(
       }
     },
     navbar: {
-      brandName: { type: String, default: "FORGE_COLLECTIVE" },
+      brandName: { type: String, default: "NVENTRA" },
       links: {
         type: [{ label: { type: String }, href: { type: String } }],
         default: []
@@ -13927,7 +14240,9 @@ var portfolioSettingsSchema = new import_mongoose67.Schema(
       }
     },
     techMarquee: { type: [String], default: [] },
-    services: { type: [String], default: [] },
+    // `services` was removed here deliberately — see PortfolioService. Existing
+    // documents may still carry the field; it is ignored on read and stripped
+    // on the next save.
     callSlots: { type: [String], default: [] },
     about: {
       vision: { type: String, default: "" },
@@ -13976,13 +14291,55 @@ var portfolioSettingsSchema = new import_mongoose67.Schema(
       email: { type: String, default: "" },
       phone: { type: String, default: "" }
     },
+    pageCopy: {
+      type: {
+        work: { type: pageCopySchema, default: void 0 },
+        services: { type: pageCopySchema, default: void 0 },
+        team: { type: pageCopySchema, default: void 0 },
+        about: { type: pageCopySchema, default: void 0 },
+        process: { type: pageCopySchema, default: void 0 },
+        contact: { type: pageCopySchema, default: void 0 },
+        insights: { type: pageCopySchema, default: void 0 },
+        faq: { type: pageCopySchema, default: void 0 }
+      },
+      default: {}
+    },
+    contactCta: {
+      eyebrow: { type: String, default: "" },
+      title: { type: String, default: "" },
+      lead: { type: String, default: "" },
+      primary: { label: { type: String, default: "" }, href: { type: String, default: "" } },
+      secondary: { label: { type: String, default: "" }, href: { type: String, default: "" } }
+    },
+    contactForm: {
+      budgetBands: { type: [String], default: [] },
+      timelines: { type: [String], default: [] }
+    },
+    engagement: {
+      eyebrow: { type: String, default: "" },
+      title: { type: String, default: "" },
+      lead: { type: String, default: "" },
+      bands: {
+        type: [
+          {
+            name: { type: String, default: "" },
+            range: { type: String, default: "" },
+            duration: { type: String, default: "" },
+            description: { type: String, default: "" }
+          }
+        ],
+        default: []
+      },
+      footnote: { type: String, default: "" }
+    },
     isActive: { type: Boolean, default: true }
   },
   { timestamps: true }
 );
-var PortfolioSettingsModel = import_mongoose67.default.models.PortfolioSettings ?? import_mongoose67.default.model("PortfolioSettings", portfolioSettingsSchema);
+var PortfolioSettingsModel = import_mongoose68.default.models.PortfolioSettings ?? import_mongoose68.default.model("PortfolioSettings", portfolioSettingsSchema);
 
 // src/modules/portfolio/portfolio-settings.routes.ts
+var ADMIN_ROLES3 = ["super_admin", "admin"];
 var router27 = (0, import_express28.Router)();
 var writeRateLimiter3 = (0, import_express_rate_limit21.default)({ windowMs: 60 * 1e3, max: 30, standardHeaders: true, legacyHeaders: false });
 var linkSchema = import_zod28.z.object({ label: import_zod28.z.string(), href: import_zod28.z.string() });
@@ -13998,6 +14355,17 @@ var statSchema = import_zod28.z.object({ label: import_zod28.z.string(), value: 
 var phaseSchema = import_zod28.z.object({ id: import_zod28.z.string(), n: import_zod28.z.string(), title: import_zod28.z.string(), description: import_zod28.z.string(), accent: import_zod28.z.string(), dot: import_zod28.z.string() });
 var perkSchema = import_zod28.z.object({ title: import_zod28.z.string(), description: import_zod28.z.string(), icon: import_zod28.z.string(), gradient: import_zod28.z.string(), border: import_zod28.z.string() });
 var playbookSchema = import_zod28.z.object({ phase: import_zod28.z.string(), name: import_zod28.z.string(), body: import_zod28.z.string() });
+var pageCopySchema2 = import_zod28.z.object({
+  eyebrow: import_zod28.z.string().default(""),
+  title: import_zod28.z.string().default(""),
+  lead: import_zod28.z.string().default("")
+});
+var engagementBandSchema = import_zod28.z.object({
+  name: import_zod28.z.string(),
+  range: import_zod28.z.string(),
+  duration: import_zod28.z.string(),
+  description: import_zod28.z.string()
+});
 var settingsSchema = import_zod28.z.object({
   hero: import_zod28.z.object({
     tagline: import_zod28.z.string().default(""),
@@ -14007,7 +14375,7 @@ var settingsSchema = import_zod28.z.object({
     featuredProjects: import_zod28.z.array(featuredProjectSchema).default([])
   }).default({}),
   navbar: import_zod28.z.object({
-    brandName: import_zod28.z.string().default("FORGE_COLLECTIVE"),
+    brandName: import_zod28.z.string().default("NVENTRA"),
     links: import_zod28.z.array(linkSchema).default([])
   }).default({}),
   footer: import_zod28.z.object({
@@ -14017,7 +14385,8 @@ var settingsSchema = import_zod28.z.object({
     links: import_zod28.z.array(linkSchema).default([])
   }).default({}),
   techMarquee: import_zod28.z.array(import_zod28.z.string()).default([]),
-  services: import_zod28.z.array(import_zod28.z.string()).default([]),
+  // No `services`: Zod strips unknown keys, so an older admin build still
+  // sending the field is accepted and the field is dropped rather than 400ing.
   callSlots: import_zod28.z.array(import_zod28.z.string()).default([]),
   about: import_zod28.z.object({
     vision: import_zod28.z.string().default(""),
@@ -14034,6 +14403,34 @@ var settingsSchema = import_zod28.z.object({
     email: import_zod28.z.string().default(""),
     phone: import_zod28.z.string().default("")
   }).default({}),
+  pageCopy: import_zod28.z.object({
+    work: pageCopySchema2.optional(),
+    services: pageCopySchema2.optional(),
+    team: pageCopySchema2.optional(),
+    about: pageCopySchema2.optional(),
+    process: pageCopySchema2.optional(),
+    contact: pageCopySchema2.optional(),
+    insights: pageCopySchema2.optional(),
+    faq: pageCopySchema2.optional()
+  }).default({}),
+  contactCta: import_zod28.z.object({
+    eyebrow: import_zod28.z.string().default(""),
+    title: import_zod28.z.string().default(""),
+    lead: import_zod28.z.string().default(""),
+    primary: import_zod28.z.object({ label: import_zod28.z.string(), href: import_zod28.z.string() }).default({ label: "", href: "" }),
+    secondary: import_zod28.z.object({ label: import_zod28.z.string(), href: import_zod28.z.string() }).default({ label: "", href: "" })
+  }).default({}),
+  contactForm: import_zod28.z.object({
+    budgetBands: import_zod28.z.array(import_zod28.z.string()).default([]),
+    timelines: import_zod28.z.array(import_zod28.z.string()).default([])
+  }).default({}),
+  engagement: import_zod28.z.object({
+    eyebrow: import_zod28.z.string().default(""),
+    title: import_zod28.z.string().default(""),
+    lead: import_zod28.z.string().default(""),
+    bands: import_zod28.z.array(engagementBandSchema).default([]),
+    footnote: import_zod28.z.string().default("")
+  }).default({}),
   isActive: import_zod28.z.boolean().default(true)
 });
 router27.get("/api/v1/public/portfolio/settings", async (_req, res, next) => {
@@ -14044,7 +14441,7 @@ router27.get("/api/v1/public/portfolio/settings", async (_req, res, next) => {
     next(error);
   }
 });
-router27.get("/api/v1/portfolio/settings", authenticateJwt, async (_req, res, next) => {
+router27.get("/api/v1/portfolio/settings", authenticateJwt, requireRole(ADMIN_ROLES3), requireRbacPermission("/portfolio/settings", "read"), async (_req, res, next) => {
   try {
     const settings = await PortfolioSettingsModel.findOne().lean().exec();
     res.json(settings ?? {});
@@ -14052,10 +14449,21 @@ router27.get("/api/v1/portfolio/settings", authenticateJwt, async (_req, res, ne
     next(error);
   }
 });
-router27.put("/api/v1/portfolio/settings", writeRateLimiter3, authenticateJwt, async (req, res, next) => {
+router27.put("/api/v1/portfolio/settings", writeRateLimiter3, authenticateJwt, requireRole(ADMIN_ROLES3), requireRbacPermission("/portfolio/settings", "edit"), async (req, res, next) => {
   try {
-    const payload = settingsSchema.parse(req.body ?? {});
-    const updated = await PortfolioSettingsModel.findOneAndUpdate({}, { $set: payload }, { new: true, upsert: true, runValidators: true }).lean().exec();
+    const payload = settingsSchema.deepPartial().parse(req.body ?? {});
+    const changes = Object.fromEntries(
+      Object.entries(payload).filter(([, value]) => value !== void 0)
+    );
+    if (Object.keys(changes).length === 0) {
+      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "No settings fields supplied");
+    }
+    const updated = await PortfolioSettingsModel.findOneAndUpdate(
+      {},
+      { $set: changes },
+      { new: true, upsert: true, runValidators: true }
+    ).lean().exec();
+    revalidateWebsite(SETTINGS_PATHS);
     res.json(updated);
   } catch (error) {
     if (error instanceof import_zod28.z.ZodError) {
@@ -14067,21 +14475,963 @@ router27.put("/api/v1/portfolio/settings", writeRateLimiter3, authenticateJwt, a
 });
 var portfolioSettingsRoutes = router27;
 
-// src/modules/portfolio/portfolio-contacts.routes.ts
+// src/modules/portfolio/portfolio-services.routes.ts
 var import_express_rate_limit22 = __toESM(require("express-rate-limit"), 1);
 var import_express29 = require("express");
-var import_mongoose69 = __toESM(require("mongoose"), 1);
+var import_mongoose70 = __toESM(require("mongoose"), 1);
 var import_zod29 = require("zod");
 
+// src/modules/portfolio/portfolio-services.models.ts
+var import_mongoose69 = __toESM(require("mongoose"), 1);
+var portfolioServiceSchema = new import_mongoose69.Schema(
+  {
+    slug: { type: String, required: true, unique: true, trim: true, lowercase: true },
+    title: { type: String, required: true, trim: true, maxlength: 120 },
+    subtitle: { type: String, default: "", trim: true, maxlength: 200 },
+    description: { type: String, default: "", maxlength: 2e3 },
+    tags: { type: [String], default: [] },
+    icon: { type: String, default: "", trim: true },
+    pointers: { type: [String], default: [] },
+    highlights: { type: [String], default: [] },
+    showInContactForm: { type: Boolean, default: true },
+    isActive: { type: Boolean, default: true, index: true },
+    order: { type: Number, default: 0, index: true }
+  },
+  { timestamps: true }
+);
+portfolioServiceSchema.index({ isActive: 1, order: 1 });
+var PortfolioServiceModel = import_mongoose69.default.models.PortfolioService ?? import_mongoose69.default.model("PortfolioService", portfolioServiceSchema);
+
+// src/modules/portfolio/portfolio-services.routes.ts
+var ADMIN_ROLES4 = ["super_admin", "admin"];
+var router28 = (0, import_express29.Router)();
+var writeRateLimiter4 = (0, import_express_rate_limit22.default)({ windowMs: 60 * 1e3, max: 30, standardHeaders: true, legacyHeaders: false });
+function ensureValidObjectId20(id) {
+  if (!import_mongoose70.default.Types.ObjectId.isValid(id)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
+  }
+}
+var createServiceSchema = import_zod29.z.object({
+  slug: import_zod29.z.string().min(1).max(120).trim().toLowerCase().regex(/^[a-z0-9-]+$/, "Slug must be lowercase letters, numbers and hyphens"),
+  title: import_zod29.z.string().min(1).max(120).trim(),
+  subtitle: import_zod29.z.string().max(200).trim().default(""),
+  description: import_zod29.z.string().max(2e3).default(""),
+  tags: import_zod29.z.array(import_zod29.z.string().trim()).default([]),
+  icon: import_zod29.z.string().max(80).trim().default(""),
+  pointers: import_zod29.z.array(import_zod29.z.string().trim()).default([]),
+  highlights: import_zod29.z.array(import_zod29.z.string().trim()).default([]),
+  showInContactForm: import_zod29.z.boolean().default(true),
+  isActive: import_zod29.z.boolean().default(true),
+  order: import_zod29.z.number().int().default(0)
+});
+var updateServiceSchema = createServiceSchema.partial();
+var listQuerySchema4 = import_zod29.z.object({
+  page: import_zod29.z.coerce.number().int().min(1).default(1),
+  limit: import_zod29.z.coerce.number().int().min(1).max(100).default(50)
+});
+router28.get("/api/v1/public/portfolio/services", async (_req, res, next) => {
+  try {
+    const items = await PortfolioServiceModel.find({ isActive: true }).sort({ order: 1, title: 1 }).lean().exec();
+    res.json({ items, total: items.length });
+  } catch (error) {
+    next(error);
+  }
+});
+router28.get(
+  "/api/v1/portfolio/services",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES4),
+  requireRbacPermission("/portfolio/services", "read"),
+  async (req, res, next) => {
+    try {
+      const { page, limit } = listQuerySchema4.parse(req.query ?? {});
+      const skip = (page - 1) * limit;
+      const [total, items] = await Promise.all([
+        PortfolioServiceModel.countDocuments().exec(),
+        PortfolioServiceModel.find().sort({ order: 1, title: 1 }).skip(skip).limit(limit).lean().exec()
+      ]);
+      res.json({ items, page, limit, total });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router28.post(
+  "/api/v1/portfolio/services",
+  writeRateLimiter4,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES4),
+  requireRbacPermission("/portfolio/services", "write"),
+  async (req, res, next) => {
+    try {
+      const payload = createServiceSchema.parse(req.body ?? {});
+      const created = await PortfolioServiceModel.create(payload);
+      revalidateWebsite(SERVICE_PATHS);
+      res.status(201).json(created.toObject());
+    } catch (error) {
+      if (error instanceof import_zod29.z.ZodError) {
+        next(new AppError(400, ERROR_CODES.BAD_REQUEST, error.issues[0]?.message ?? "Invalid service payload"));
+        return;
+      }
+      if (error.code === 11e3) {
+        next(new AppError(400, ERROR_CODES.BAD_REQUEST, "A service with that slug already exists."));
+        return;
+      }
+      next(error);
+    }
+  }
+);
+router28.get(
+  "/api/v1/portfolio/services/:id",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES4),
+  requireRbacPermission("/portfolio/services", "read"),
+  async (req, res, next) => {
+    try {
+      ensureValidObjectId20(req.params.id);
+      const item = await PortfolioServiceModel.findById(req.params.id).lean().exec();
+      if (!item) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Service not found");
+      res.json(item);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router28.patch(
+  "/api/v1/portfolio/services/:id",
+  writeRateLimiter4,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES4),
+  requireRbacPermission("/portfolio/services", "edit"),
+  async (req, res, next) => {
+    try {
+      ensureValidObjectId20(req.params.id);
+      const payload = updateServiceSchema.parse(req.body ?? {});
+      const updated = await PortfolioServiceModel.findByIdAndUpdate(
+        req.params.id,
+        { $set: payload },
+        { new: true, runValidators: true }
+      ).lean().exec();
+      if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Service not found");
+      revalidateWebsite(SERVICE_PATHS);
+      res.json(updated);
+    } catch (error) {
+      if (error instanceof import_zod29.z.ZodError) {
+        next(new AppError(400, ERROR_CODES.BAD_REQUEST, error.issues[0]?.message ?? "Invalid service payload"));
+        return;
+      }
+      next(error);
+    }
+  }
+);
+router28.delete(
+  "/api/v1/portfolio/services/:id",
+  writeRateLimiter4,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES4),
+  requireRbacPermission("/portfolio/services", "delete"),
+  async (req, res, next) => {
+    try {
+      ensureValidObjectId20(req.params.id);
+      const existing = await PortfolioServiceModel.findById(req.params.id).exec();
+      if (!existing) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Service not found");
+      await PortfolioServiceModel.deleteOne({ _id: existing._id }).exec();
+      revalidateWebsite(SERVICE_PATHS);
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+var portfolioServicesRoutes = router28;
+
+// src/modules/portfolio/portfolio-social-proof.routes.ts
+var import_express_rate_limit23 = __toESM(require("express-rate-limit"), 1);
+var import_express30 = require("express");
+var import_mongoose72 = __toESM(require("mongoose"), 1);
+var import_zod30 = require("zod");
+
+// src/modules/portfolio/portfolio-social-proof.models.ts
+var import_mongoose71 = __toESM(require("mongoose"), 1);
+var testimonialSchema = new import_mongoose71.Schema(
+  {
+    quote: { type: String, required: true, trim: true, maxlength: 1200 },
+    authorName: { type: String, required: true, trim: true, maxlength: 120 },
+    authorRole: { type: String, default: "", trim: true, maxlength: 120 },
+    authorCompany: { type: String, default: "", trim: true, maxlength: 120 },
+    avatar: { type: String, default: "", trim: true },
+    rating: { type: Number, min: 1, max: 5 },
+    isActive: { type: Boolean, default: true, index: true },
+    order: { type: Number, default: 0, index: true }
+  },
+  { timestamps: true }
+);
+testimonialSchema.index({ isActive: 1, order: 1 });
+var PortfolioTestimonialModel = import_mongoose71.default.models.PortfolioTestimonial ?? import_mongoose71.default.model("PortfolioTestimonial", testimonialSchema);
+var clientLogoSchema = new import_mongoose71.Schema(
+  {
+    name: { type: String, required: true, trim: true, maxlength: 120 },
+    logo: { type: String, default: "", trim: true },
+    websiteUrl: { type: String, default: "", trim: true, maxlength: 500 },
+    isActive: { type: Boolean, default: true, index: true },
+    order: { type: Number, default: 0, index: true }
+  },
+  { timestamps: true }
+);
+clientLogoSchema.index({ isActive: 1, order: 1 });
+var PortfolioClientLogoModel = import_mongoose71.default.models.PortfolioClientLogo ?? import_mongoose71.default.model("PortfolioClientLogo", clientLogoSchema);
+var metricSchema = new import_mongoose71.Schema(
+  {
+    value: { type: String, required: true, trim: true, maxlength: 40 },
+    label: { type: String, required: true, trim: true, maxlength: 120 },
+    description: { type: String, default: "", trim: true, maxlength: 400 },
+    isActive: { type: Boolean, default: true, index: true },
+    order: { type: Number, default: 0, index: true }
+  },
+  { timestamps: true }
+);
+metricSchema.index({ isActive: 1, order: 1 });
+var PortfolioMetricModel = import_mongoose71.default.models.PortfolioMetric ?? import_mongoose71.default.model("PortfolioMetric", metricSchema);
+
+// src/modules/portfolio/portfolio-social-proof.routes.ts
+var ADMIN_ROLES5 = ["super_admin", "admin"];
+var router29 = (0, import_express30.Router)();
+var writeRateLimiter5 = (0, import_express_rate_limit23.default)({ windowMs: 60 * 1e3, max: 30, standardHeaders: true, legacyHeaders: false });
+var testimonialSchema2 = import_zod30.z.object({
+  quote: import_zod30.z.string().min(1).max(1200).trim(),
+  authorName: import_zod30.z.string().min(1).max(120).trim(),
+  authorRole: import_zod30.z.string().max(120).trim().default(""),
+  authorCompany: import_zod30.z.string().max(120).trim().default(""),
+  avatar: import_zod30.z.string().max(500).trim().default(""),
+  rating: import_zod30.z.number().int().min(1).max(5).optional(),
+  isActive: import_zod30.z.boolean().default(true),
+  order: import_zod30.z.number().int().default(0)
+});
+var clientLogoSchema2 = import_zod30.z.object({
+  name: import_zod30.z.string().min(1).max(120).trim(),
+  logo: import_zod30.z.string().max(500).trim().default(""),
+  websiteUrl: import_zod30.z.string().max(500).trim().default(""),
+  isActive: import_zod30.z.boolean().default(true),
+  order: import_zod30.z.number().int().default(0)
+});
+var metricSchema2 = import_zod30.z.object({
+  value: import_zod30.z.string().min(1).max(40).trim(),
+  label: import_zod30.z.string().min(1).max(120).trim(),
+  description: import_zod30.z.string().max(400).trim().default(""),
+  isActive: import_zod30.z.boolean().default(true),
+  order: import_zod30.z.number().int().default(0)
+});
+function registerResource(options) {
+  const { path: path7, menuUrl, model, create, label } = options;
+  const update = create.partial();
+  const ensureId4 = (id) => {
+    if (!import_mongoose72.default.Types.ObjectId.isValid(id)) {
+      throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
+    }
+  };
+  const onZodError4 = (error, next) => {
+    if (error instanceof import_zod30.z.ZodError) {
+      next(new AppError(400, ERROR_CODES.BAD_REQUEST, error.issues[0]?.message ?? `Invalid ${label} payload`));
+      return true;
+    }
+    return false;
+  };
+  router29.get(`/api/v1/public/portfolio/${path7}`, async (_req, res, next) => {
+    try {
+      const items = await model.find({ isActive: true }).sort({ order: 1 }).lean().exec();
+      res.json({ items, total: items.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+  router29.get(
+    `/api/v1/portfolio/${path7}`,
+    authenticateJwt,
+    requireRole(ADMIN_ROLES5),
+    requireRbacPermission(menuUrl, "read"),
+    async (_req, res, next) => {
+      try {
+        const items = await model.find().sort({ order: 1 }).lean().exec();
+        res.json({ items, total: items.length });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+  router29.post(
+    `/api/v1/portfolio/${path7}`,
+    writeRateLimiter5,
+    authenticateJwt,
+    requireRole(ADMIN_ROLES5),
+    requireRbacPermission(menuUrl, "write"),
+    async (req, res, next) => {
+      try {
+        const payload = create.parse(req.body ?? {});
+        const created = await model.create(payload);
+        revalidateWebsite(SOCIAL_PROOF_PATHS);
+        res.status(201).json(created);
+      } catch (error) {
+        if (onZodError4(error, next)) return;
+        next(error);
+      }
+    }
+  );
+  router29.patch(
+    `/api/v1/portfolio/${path7}/:id`,
+    writeRateLimiter5,
+    authenticateJwt,
+    requireRole(ADMIN_ROLES5),
+    requireRbacPermission(menuUrl, "edit"),
+    async (req, res, next) => {
+      try {
+        ensureId4(req.params.id);
+        const payload = update.parse(req.body ?? {});
+        const updated = await model.findByIdAndUpdate(req.params.id, { $set: payload }, { new: true, runValidators: true }).lean().exec();
+        if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, `${label} not found`);
+        revalidateWebsite(SOCIAL_PROOF_PATHS);
+        res.json(updated);
+      } catch (error) {
+        if (onZodError4(error, next)) return;
+        next(error);
+      }
+    }
+  );
+  router29.delete(
+    `/api/v1/portfolio/${path7}/:id`,
+    writeRateLimiter5,
+    authenticateJwt,
+    requireRole(ADMIN_ROLES5),
+    requireRbacPermission(menuUrl, "delete"),
+    async (req, res, next) => {
+      try {
+        ensureId4(req.params.id);
+        const deleted = await model.findByIdAndDelete(req.params.id).lean().exec();
+        if (!deleted) throw new AppError(404, ERROR_CODES.NOT_FOUND, `${label} not found`);
+        revalidateWebsite(SOCIAL_PROOF_PATHS);
+        res.status(204).send();
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+}
+registerResource({
+  path: "testimonials",
+  menuUrl: "/portfolio/social-proof",
+  model: PortfolioTestimonialModel,
+  create: testimonialSchema2,
+  label: "Testimonial"
+});
+registerResource({
+  path: "client-logos",
+  menuUrl: "/portfolio/social-proof",
+  model: PortfolioClientLogoModel,
+  create: clientLogoSchema2,
+  label: "Client logo"
+});
+registerResource({
+  path: "metrics",
+  menuUrl: "/portfolio/social-proof",
+  model: PortfolioMetricModel,
+  create: metricSchema2,
+  label: "Metric"
+});
+var portfolioSocialProofRoutes = router29;
+
+// src/modules/portfolio/portfolio-legal.routes.ts
+var import_express_rate_limit24 = __toESM(require("express-rate-limit"), 1);
+var import_express31 = require("express");
+var import_mongoose74 = __toESM(require("mongoose"), 1);
+var import_zod31 = require("zod");
+
+// src/modules/portfolio/portfolio-legal.models.ts
+var import_mongoose73 = __toESM(require("mongoose"), 1);
+var legalDocumentSchema = new import_mongoose73.Schema(
+  {
+    slug: { type: String, required: true, unique: true, trim: true, lowercase: true, maxlength: 80 },
+    title: { type: String, required: true, trim: true, maxlength: 160 },
+    lastUpdated: { type: String, default: "", trim: true, maxlength: 40 },
+    intro: { type: String, default: "", trim: true, maxlength: 4e3 },
+    sections: {
+      type: [
+        {
+          heading: { type: String, default: "", trim: true, maxlength: 200 },
+          body: { type: String, default: "", trim: true, maxlength: 2e4 }
+        }
+      ],
+      default: []
+    },
+    isPublished: { type: Boolean, default: false, index: true },
+    order: { type: Number, default: 0, index: true }
+  },
+  { timestamps: true }
+);
+legalDocumentSchema.index({ isPublished: 1, order: 1 });
+var LegalDocumentModel = import_mongoose73.default.models.LegalDocument ?? import_mongoose73.default.model("LegalDocument", legalDocumentSchema);
+
+// src/modules/portfolio/portfolio-legal.routes.ts
+var ADMIN_ROLES6 = ["super_admin", "admin"];
+var MENU_URL = "/portfolio/legal";
+var router30 = (0, import_express31.Router)();
+var writeRateLimiter6 = (0, import_express_rate_limit24.default)({
+  windowMs: 60 * 1e3,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var sectionSchema = import_zod31.z.object({
+  heading: import_zod31.z.string().max(200).trim().default(""),
+  body: import_zod31.z.string().max(2e4).trim().default("")
+});
+var createSchema2 = import_zod31.z.object({
+  // Lowercase URL segment only. This string becomes a public path, so it is
+  // constrained here rather than sanitised at render time.
+  slug: import_zod31.z.string().min(1).max(80).trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug may contain lowercase letters, numbers and hyphens"),
+  title: import_zod31.z.string().min(1).max(160).trim(),
+  lastUpdated: import_zod31.z.string().max(40).trim().default(""),
+  intro: import_zod31.z.string().max(4e3).trim().default(""),
+  sections: import_zod31.z.array(sectionSchema).max(60).default([]),
+  isPublished: import_zod31.z.boolean().default(false),
+  order: import_zod31.z.number().int().default(0)
+});
+var updateSchema2 = createSchema2.partial();
+function ensureId(id) {
+  if (!import_mongoose74.default.Types.ObjectId.isValid(id)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
+  }
+}
+function slugOf(document) {
+  return document.slug;
+}
+function onZodError(error, next) {
+  if (error instanceof import_zod31.z.ZodError) {
+    next(new AppError(400, ERROR_CODES.BAD_REQUEST, error.issues[0]?.message ?? "Invalid legal document"));
+    return true;
+  }
+  return false;
+}
+router30.get("/api/v1/public/portfolio/legal", async (_req, res, next) => {
+  try {
+    const items = await LegalDocumentModel.find({ isPublished: true }).select("slug title lastUpdated order").sort({ order: 1 }).lean().exec();
+    res.json({ items, total: items.length });
+  } catch (error) {
+    next(error);
+  }
+});
+router30.get("/api/v1/public/portfolio/legal/:slug", async (req, res, next) => {
+  try {
+    const document = await LegalDocumentModel.findOne({
+      slug: String(req.params.slug).toLowerCase(),
+      isPublished: true
+    }).lean().exec();
+    if (!document) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Legal document not found");
+    res.json(document);
+  } catch (error) {
+    next(error);
+  }
+});
+router30.get(
+  "/api/v1/portfolio/legal",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES6),
+  requireRbacPermission(MENU_URL, "read"),
+  async (_req, res, next) => {
+    try {
+      const items = await LegalDocumentModel.find().sort({ order: 1 }).lean().exec();
+      res.json({ items, total: items.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router30.post(
+  "/api/v1/portfolio/legal",
+  writeRateLimiter6,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES6),
+  requireRbacPermission(MENU_URL, "write"),
+  async (req, res, next) => {
+    try {
+      const payload = createSchema2.parse(req.body ?? {});
+      const clash = await LegalDocumentModel.exists({ slug: payload.slug });
+      if (clash) {
+        throw new AppError(409, ERROR_CODES.BAD_REQUEST, "A legal document with that slug already exists");
+      }
+      const created = await LegalDocumentModel.create(payload);
+      revalidateWebsite(legalPathsFor(payload.slug));
+      res.status(201).json(created);
+    } catch (error) {
+      if (onZodError(error, next)) return;
+      next(error);
+    }
+  }
+);
+router30.patch(
+  "/api/v1/portfolio/legal/:id",
+  writeRateLimiter6,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES6),
+  requireRbacPermission(MENU_URL, "edit"),
+  async (req, res, next) => {
+    try {
+      ensureId(req.params.id);
+      const payload = updateSchema2.parse(req.body ?? {});
+      const before = await LegalDocumentModel.findById(req.params.id).select("slug").lean().exec();
+      if (!before) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Legal document not found");
+      if (payload.slug && payload.slug !== slugOf(before)) {
+        const clash = await LegalDocumentModel.exists({ slug: payload.slug });
+        if (clash) {
+          throw new AppError(409, ERROR_CODES.BAD_REQUEST, "A legal document with that slug already exists");
+        }
+      }
+      const updated = await LegalDocumentModel.findByIdAndUpdate(
+        req.params.id,
+        { $set: payload },
+        { new: true, runValidators: true }
+      ).lean().exec();
+      if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Legal document not found");
+      revalidateWebsite([...legalPathsFor(slugOf(before)), ...legalPathsFor(slugOf(updated))]);
+      res.json(updated);
+    } catch (error) {
+      if (onZodError(error, next)) return;
+      next(error);
+    }
+  }
+);
+router30.delete(
+  "/api/v1/portfolio/legal/:id",
+  writeRateLimiter6,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES6),
+  requireRbacPermission(MENU_URL, "delete"),
+  async (req, res, next) => {
+    try {
+      ensureId(req.params.id);
+      const deleted = await LegalDocumentModel.findByIdAndDelete(req.params.id).lean().exec();
+      if (!deleted) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Legal document not found");
+      revalidateWebsite(legalPathsFor(slugOf(deleted)));
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+var portfolioLegalRoutes = router30;
+
+// src/modules/portfolio/portfolio-faq.routes.ts
+var import_express_rate_limit25 = __toESM(require("express-rate-limit"), 1);
+var import_express32 = require("express");
+var import_mongoose76 = __toESM(require("mongoose"), 1);
+var import_zod32 = require("zod");
+
+// src/modules/portfolio/portfolio-faq.models.ts
+var import_mongoose75 = __toESM(require("mongoose"), 1);
+var faqSchema = new import_mongoose75.Schema(
+  {
+    question: { type: String, required: true, trim: true, maxlength: 300 },
+    answer: { type: String, required: true, trim: true, maxlength: 4e3 },
+    category: { type: String, default: "", trim: true, maxlength: 80 },
+    isActive: { type: Boolean, default: true, index: true },
+    order: { type: Number, default: 0, index: true }
+  },
+  { timestamps: true }
+);
+faqSchema.index({ isActive: 1, order: 1 });
+var PortfolioFaqModel = import_mongoose75.default.models.PortfolioFaq ?? import_mongoose75.default.model("PortfolioFaq", faqSchema);
+
+// src/modules/portfolio/portfolio-faq.routes.ts
+var ADMIN_ROLES7 = ["super_admin", "admin"];
+var MENU_URL2 = "/portfolio/faq";
+var router31 = (0, import_express32.Router)();
+var writeRateLimiter7 = (0, import_express_rate_limit25.default)({
+  windowMs: 60 * 1e3,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var createSchema3 = import_zod32.z.object({
+  question: import_zod32.z.string().min(1).max(300).trim(),
+  answer: import_zod32.z.string().min(1).max(4e3).trim(),
+  category: import_zod32.z.string().max(80).trim().default(""),
+  isActive: import_zod32.z.boolean().default(true),
+  order: import_zod32.z.number().int().default(0)
+});
+var updateSchema3 = createSchema3.partial();
+function ensureId2(id) {
+  if (!import_mongoose76.default.Types.ObjectId.isValid(id)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
+  }
+}
+function onZodError2(error, next) {
+  if (error instanceof import_zod32.z.ZodError) {
+    next(new AppError(400, ERROR_CODES.BAD_REQUEST, error.issues[0]?.message ?? "Invalid FAQ payload"));
+    return true;
+  }
+  return false;
+}
+router31.get("/api/v1/public/portfolio/faqs", async (_req, res, next) => {
+  try {
+    const items = await PortfolioFaqModel.find({ isActive: true }).sort({ order: 1 }).lean().exec();
+    res.json({ items, total: items.length });
+  } catch (error) {
+    next(error);
+  }
+});
+router31.get(
+  "/api/v1/portfolio/faqs",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES7),
+  requireRbacPermission(MENU_URL2, "read"),
+  async (_req, res, next) => {
+    try {
+      const items = await PortfolioFaqModel.find().sort({ order: 1 }).lean().exec();
+      res.json({ items, total: items.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router31.post(
+  "/api/v1/portfolio/faqs",
+  writeRateLimiter7,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES7),
+  requireRbacPermission(MENU_URL2, "write"),
+  async (req, res, next) => {
+    try {
+      const created = await PortfolioFaqModel.create(createSchema3.parse(req.body ?? {}));
+      revalidateWebsite(FAQ_PATHS);
+      res.status(201).json(created);
+    } catch (error) {
+      if (onZodError2(error, next)) return;
+      next(error);
+    }
+  }
+);
+router31.patch(
+  "/api/v1/portfolio/faqs/:id",
+  writeRateLimiter7,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES7),
+  requireRbacPermission(MENU_URL2, "edit"),
+  async (req, res, next) => {
+    try {
+      ensureId2(req.params.id);
+      const payload = updateSchema3.parse(req.body ?? {});
+      const updated = await PortfolioFaqModel.findByIdAndUpdate(
+        req.params.id,
+        { $set: payload },
+        { new: true, runValidators: true }
+      ).lean().exec();
+      if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "FAQ not found");
+      revalidateWebsite(FAQ_PATHS);
+      res.json(updated);
+    } catch (error) {
+      if (onZodError2(error, next)) return;
+      next(error);
+    }
+  }
+);
+router31.delete(
+  "/api/v1/portfolio/faqs/:id",
+  writeRateLimiter7,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES7),
+  requireRbacPermission(MENU_URL2, "delete"),
+  async (req, res, next) => {
+    try {
+      ensureId2(req.params.id);
+      const deleted = await PortfolioFaqModel.findByIdAndDelete(req.params.id).lean().exec();
+      if (!deleted) throw new AppError(404, ERROR_CODES.NOT_FOUND, "FAQ not found");
+      revalidateWebsite(FAQ_PATHS);
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+var portfolioFaqRoutes = router31;
+
+// src/modules/portfolio/portfolio-posts.routes.ts
+var import_express_rate_limit26 = __toESM(require("express-rate-limit"), 1);
+var import_express33 = require("express");
+var import_mongoose78 = __toESM(require("mongoose"), 1);
+var import_zod33 = require("zod");
+
+// src/modules/portfolio/portfolio-posts.models.ts
+var import_mongoose77 = __toESM(require("mongoose"), 1);
+var blockSchema = {
+  type: {
+    type: String,
+    enum: ["paragraph", "heading", "quote", "code", "list"],
+    default: "paragraph"
+  },
+  label: { type: String, default: "", trim: true, maxlength: 200 },
+  text: { type: String, default: "", maxlength: 2e4 }
+};
+var postSchema = new import_mongoose77.Schema(
+  {
+    slug: { type: String, required: true, unique: true, trim: true, lowercase: true, maxlength: 120 },
+    title: { type: String, required: true, trim: true, maxlength: 200 },
+    excerpt: { type: String, default: "", trim: true, maxlength: 400 },
+    coverImage: { type: String, default: "", trim: true, maxlength: 500 },
+    category: { type: String, default: "", trim: true, maxlength: 80 },
+    tags: { type: [String], default: [] },
+    authorName: { type: String, default: "", trim: true, maxlength: 120 },
+    authorRole: { type: String, default: "", trim: true, maxlength: 120 },
+    publishedAt: { type: String, default: "", trim: true, maxlength: 40 },
+    readingMinutes: { type: Number, default: 0, min: 0, max: 240 },
+    blocks: { type: [blockSchema], default: [] },
+    isPublished: { type: Boolean, default: false, index: true },
+    isFeatured: { type: Boolean, default: false },
+    order: { type: Number, default: 0, index: true }
+  },
+  { timestamps: true }
+);
+postSchema.index({ isPublished: 1, publishedAt: -1 });
+var PortfolioPostModel = import_mongoose77.default.models.PortfolioPost ?? import_mongoose77.default.model("PortfolioPost", postSchema);
+
+// src/modules/portfolio/portfolio-posts.routes.ts
+var ADMIN_ROLES8 = ["super_admin", "admin"];
+var MENU_URL3 = "/portfolio/posts";
+var LIST_FIELDS = "slug title excerpt coverImage category tags authorName authorRole publishedAt readingMinutes isFeatured order";
+var router32 = (0, import_express33.Router)();
+var writeRateLimiter8 = (0, import_express_rate_limit26.default)({
+  windowMs: 60 * 1e3,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var blockSchema2 = import_zod33.z.object({
+  type: import_zod33.z.enum(["paragraph", "heading", "quote", "code", "list"]).default("paragraph"),
+  label: import_zod33.z.string().max(200).trim().default(""),
+  text: import_zod33.z.string().max(2e4).default("")
+});
+var createSchema4 = import_zod33.z.object({
+  slug: import_zod33.z.string().min(1).max(120).trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug may contain lowercase letters, numbers and hyphens"),
+  title: import_zod33.z.string().min(1).max(200).trim(),
+  excerpt: import_zod33.z.string().max(400).trim().default(""),
+  coverImage: import_zod33.z.string().max(500).trim().default(""),
+  category: import_zod33.z.string().max(80).trim().default(""),
+  tags: import_zod33.z.array(import_zod33.z.string().max(40).trim()).max(20).default([]),
+  authorName: import_zod33.z.string().max(120).trim().default(""),
+  authorRole: import_zod33.z.string().max(120).trim().default(""),
+  publishedAt: import_zod33.z.string().max(40).trim().default(""),
+  readingMinutes: import_zod33.z.number().int().min(0).max(240).default(0),
+  blocks: import_zod33.z.array(blockSchema2).max(300).default([]),
+  isPublished: import_zod33.z.boolean().default(false),
+  isFeatured: import_zod33.z.boolean().default(false),
+  order: import_zod33.z.number().int().default(0)
+});
+var updateSchema4 = createSchema4.partial();
+function ensureId3(id) {
+  if (!import_mongoose78.default.Types.ObjectId.isValid(id)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
+  }
+}
+function slugOf2(document) {
+  return document.slug;
+}
+function onZodError3(error, next) {
+  if (error instanceof import_zod33.z.ZodError) {
+    next(new AppError(400, ERROR_CODES.BAD_REQUEST, error.issues[0]?.message ?? "Invalid post payload"));
+    return true;
+  }
+  return false;
+}
+router32.get("/api/v1/public/portfolio/posts", async (_req, res, next) => {
+  try {
+    const items = await PortfolioPostModel.find({ isPublished: true }).select(LIST_FIELDS).sort({ publishedAt: -1, order: 1 }).lean().exec();
+    res.json({ items, total: items.length });
+  } catch (error) {
+    next(error);
+  }
+});
+router32.get("/api/v1/public/portfolio/posts/:slug", async (req, res, next) => {
+  try {
+    const post = await PortfolioPostModel.findOne({
+      slug: String(req.params.slug).toLowerCase(),
+      isPublished: true
+    }).lean().exec();
+    if (!post) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Post not found");
+    res.json(post);
+  } catch (error) {
+    next(error);
+  }
+});
+router32.get(
+  "/api/v1/portfolio/posts",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES8),
+  requireRbacPermission(MENU_URL3, "read"),
+  async (_req, res, next) => {
+    try {
+      const items = await PortfolioPostModel.find().select(LIST_FIELDS + " isPublished").sort({ publishedAt: -1, order: 1 }).lean().exec();
+      res.json({ items, total: items.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router32.get(
+  "/api/v1/portfolio/posts/:id",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES8),
+  requireRbacPermission(MENU_URL3, "read"),
+  async (req, res, next) => {
+    try {
+      ensureId3(req.params.id);
+      const post = await PortfolioPostModel.findById(req.params.id).lean().exec();
+      if (!post) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Post not found");
+      res.json(post);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router32.post(
+  "/api/v1/portfolio/posts",
+  writeRateLimiter8,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES8),
+  requireRbacPermission(MENU_URL3, "write"),
+  async (req, res, next) => {
+    try {
+      const payload = createSchema4.parse(req.body ?? {});
+      if (await PortfolioPostModel.exists({ slug: payload.slug })) {
+        throw new AppError(409, ERROR_CODES.BAD_REQUEST, "A post with that slug already exists");
+      }
+      const created = await PortfolioPostModel.create(payload);
+      revalidateWebsite(postPathsFor(payload.slug));
+      res.status(201).json(created);
+    } catch (error) {
+      if (onZodError3(error, next)) return;
+      next(error);
+    }
+  }
+);
+router32.patch(
+  "/api/v1/portfolio/posts/:id",
+  writeRateLimiter8,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES8),
+  requireRbacPermission(MENU_URL3, "edit"),
+  async (req, res, next) => {
+    try {
+      ensureId3(req.params.id);
+      const payload = updateSchema4.parse(req.body ?? {});
+      const before = await PortfolioPostModel.findById(req.params.id).select("slug").lean().exec();
+      if (!before) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Post not found");
+      if (payload.slug && payload.slug !== slugOf2(before)) {
+        if (await PortfolioPostModel.exists({ slug: payload.slug })) {
+          throw new AppError(409, ERROR_CODES.BAD_REQUEST, "A post with that slug already exists");
+        }
+      }
+      const updated = await PortfolioPostModel.findByIdAndUpdate(
+        req.params.id,
+        { $set: payload },
+        { new: true, runValidators: true }
+      ).lean().exec();
+      if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Post not found");
+      revalidateWebsite([...postPathsFor(slugOf2(before)), ...postPathsFor(slugOf2(updated))]);
+      res.json(updated);
+    } catch (error) {
+      if (onZodError3(error, next)) return;
+      next(error);
+    }
+  }
+);
+router32.delete(
+  "/api/v1/portfolio/posts/:id",
+  writeRateLimiter8,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES8),
+  requireRbacPermission(MENU_URL3, "delete"),
+  async (req, res, next) => {
+    try {
+      ensureId3(req.params.id);
+      const deleted = await PortfolioPostModel.findByIdAndDelete(req.params.id).lean().exec();
+      if (!deleted) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Post not found");
+      revalidateWebsite(postPathsFor(slugOf2(deleted)));
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+var portfolioPostsRoutes = router32;
+
+// src/modules/portfolio/portfolio-contacts.routes.ts
+var import_express_rate_limit27 = __toESM(require("express-rate-limit"), 1);
+var import_express34 = require("express");
+var import_mongoose80 = __toESM(require("mongoose"), 1);
+var import_zod34 = require("zod");
+
+// src/core/mail/mail.service.ts
+var import_nodemailer2 = __toESM(require("nodemailer"), 1);
+var cachedTransport = null;
+var warnedUnconfigured = false;
+function isMailConfigured() {
+  return Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
+}
+function transport() {
+  if (!isMailConfigured()) {
+    if (!warnedUnconfigured) {
+      logger.warn("SMTP is not configured \u2014 transactional mail is disabled");
+      warnedUnconfigured = true;
+    }
+    return null;
+  }
+  if (!cachedTransport) {
+    cachedTransport = import_nodemailer2.default.createTransport({
+      host: env.SMTP_HOST,
+      port: env.SMTP_PORT,
+      secure: env.SMTP_SECURE === "true",
+      auth: { user: env.SMTP_USER, pass: env.SMTP_PASS }
+    });
+  }
+  return cachedTransport;
+}
+async function sendMail2(message) {
+  const mailer = transport();
+  if (!mailer) return false;
+  try {
+    await mailer.sendMail({
+      from: env.SMTP_FROM || env.SMTP_USER,
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      ...message.replyTo ? { replyTo: message.replyTo } : {}
+    });
+    return true;
+  } catch (error) {
+    logger.error("Failed to send mail", { subject: message.subject, error });
+    return false;
+  }
+}
+
 // src/modules/portfolio/portfolio-contacts.models.ts
-var import_mongoose68 = __toESM(require("mongoose"), 1);
-var portfolioContactSchema = new import_mongoose68.Schema(
+var import_mongoose79 = __toESM(require("mongoose"), 1);
+var portfolioContactSchema = new import_mongoose79.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 200 },
     email: { type: String, required: true, trim: true, lowercase: true, maxlength: 300 },
+    phone: { type: String, default: "", trim: true, maxlength: 40 },
+    company: { type: String, default: "", trim: true, maxlength: 200 },
     service: { type: String, default: "", trim: true },
+    // Stored as free strings rather than enums: these are qualification hints,
+    // and a submission must never be rejected because the options list moved on
+    // while someone had the form open.
+    budgetBand: { type: String, default: "", trim: true, maxlength: 40 },
+    timeline: { type: String, default: "", trim: true, maxlength: 40 },
     callSlot: { type: String, default: "", trim: true },
     message: { type: String, required: true, maxlength: 5e3 },
+    referrer: { type: String, default: "", trim: true, maxlength: 500 },
+    utmSource: { type: String, default: "", trim: true, maxlength: 120 },
+    utmMedium: { type: String, default: "", trim: true, maxlength: 120 },
+    utmCampaign: { type: String, default: "", trim: true, maxlength: 120 },
+    consentText: { type: String, default: "", trim: true, maxlength: 1e3 },
+    consentAt: { type: Date, default: null },
     status: {
       type: String,
       enum: ["new", "read", "replied"],
@@ -14092,44 +15442,130 @@ var portfolioContactSchema = new import_mongoose68.Schema(
   { timestamps: true }
 );
 portfolioContactSchema.index({ status: 1, createdAt: -1 });
-var PortfolioContactModel = import_mongoose68.default.models.PortfolioContact ?? import_mongoose68.default.model("PortfolioContact", portfolioContactSchema);
+var PortfolioContactModel = import_mongoose79.default.models.PortfolioContact ?? import_mongoose79.default.model("PortfolioContact", portfolioContactSchema);
 
 // src/modules/portfolio/portfolio-contacts.routes.ts
-var router28 = (0, import_express29.Router)();
-var submitRateLimiter = (0, import_express_rate_limit22.default)({ windowMs: 60 * 1e3, max: 5, standardHeaders: true, legacyHeaders: false });
-function ensureValidObjectId20(id) {
-  if (!import_mongoose69.default.Types.ObjectId.isValid(id)) {
+var ADMIN_ROLES9 = ["super_admin", "admin"];
+var router33 = (0, import_express34.Router)();
+var submitRateLimiter = (0, import_express_rate_limit27.default)({
+  windowMs: 60 * 1e3,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: sharedRateLimitStore("contact")
+});
+function ensureValidObjectId21(id) {
+  if (!import_mongoose80.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
-var submitContactSchema = import_zod29.z.object({
-  name: import_zod29.z.string().min(1).max(200).trim(),
-  email: import_zod29.z.string().email().max(300).trim().toLowerCase(),
-  service: import_zod29.z.string().max(200).default(""),
-  callSlot: import_zod29.z.string().max(200).default(""),
-  message: import_zod29.z.string().min(1).max(5e3).trim()
+var submitContactSchema = import_zod34.z.object({
+  name: import_zod34.z.string().min(1).max(200).trim(),
+  email: import_zod34.z.string().email().max(300).trim().toLowerCase(),
+  phone: import_zod34.z.string().max(40).default(""),
+  company: import_zod34.z.string().max(200).default(""),
+  service: import_zod34.z.string().max(200).default(""),
+  budgetBand: import_zod34.z.string().max(40).default(""),
+  timeline: import_zod34.z.string().max(40).default(""),
+  callSlot: import_zod34.z.string().max(200).default(""),
+  message: import_zod34.z.string().min(1).max(5e3).trim(),
+  /** Verbatim wording of the consent the visitor ticked. */
+  consentText: import_zod34.z.string().max(1e3).default(""),
+  /**
+   * Honeypot. A real browser never fills this — it is visually hidden and
+   * removed from the tab order — so anything in it is a bot, and the only
+   * correct response is to look like success while storing nothing.
+   */
+  website: import_zod34.z.string().max(200).optional()
 });
-var listQuerySchema4 = import_zod29.z.object({
-  page: import_zod29.z.coerce.number().int().min(1).default(1),
-  limit: import_zod29.z.coerce.number().int().min(1).max(100).default(20),
-  status: import_zod29.z.enum(["new", "read", "replied"]).optional()
-});
-router28.post("/api/v1/public/portfolio/contact", submitRateLimiter, async (req, res, next) => {
+var SUBMIT_MESSAGE = "Message received. We'll get back to you within 12 hours.";
+async function notifyNewLead(contact) {
+  const to = env.LEAD_NOTIFY_TO;
+  if (!to) {
+    logger.warn("LEAD_NOTIFY_TO is unset \u2014 new lead saved but nobody was notified", {
+      contactId: String(contact._id)
+    });
+    return;
+  }
+  const lines = [
+    `Name:     ${contact.name}`,
+    `Email:    ${contact.email}`,
+    contact.phone ? `Phone:    ${contact.phone}` : null,
+    contact.company ? `Company:  ${contact.company}` : null,
+    contact.service ? `Service:  ${contact.service}` : null,
+    contact.budgetBand ? `Budget:   ${contact.budgetBand}` : null,
+    contact.timeline ? `Timeline: ${contact.timeline}` : null,
+    contact.callSlot ? `Call slot: ${contact.callSlot}` : null,
+    contact.referrer ? `Referrer: ${contact.referrer}` : null,
+    "",
+    contact.message
+  ].filter((line) => line !== null);
+  const sent = await sendMail2({
+    to,
+    subject: `New enquiry \u2014 ${contact.name}${contact.company ? ` (${contact.company})` : ""}`,
+    text: lines.join("\n"),
+    // So hitting reply in the mail client answers the person, not the mailbox.
+    replyTo: contact.email
+  });
+  if (!sent) {
+    logger.error("New lead saved but the notification did not send", {
+      contactId: String(contact._id)
+    });
+  }
+}
+function headerValue2(value) {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
+}
+function attributionFrom(req) {
+  const referrer = headerValue2(req.headers.referer ?? req.headers.referrer).slice(0, 500);
+  let utmSource = "";
+  let utmMedium = "";
+  let utmCampaign = "";
   try {
-    const payload = submitContactSchema.parse(req.body ?? {});
-    const contact = await PortfolioContactModel.create(payload);
-    res.status(201).json({ message: "Message received. We'll get back to you within 12 hours.", id: contact._id });
+    if (referrer) {
+      const params = new URL(referrer).searchParams;
+      utmSource = (params.get("utm_source") ?? "").slice(0, 120);
+      utmMedium = (params.get("utm_medium") ?? "").slice(0, 120);
+      utmCampaign = (params.get("utm_campaign") ?? "").slice(0, 120);
+    }
+  } catch {
+  }
+  return { referrer, utmSource, utmMedium, utmCampaign };
+}
+var listQuerySchema5 = import_zod34.z.object({
+  page: import_zod34.z.coerce.number().int().min(1).default(1),
+  limit: import_zod34.z.coerce.number().int().min(1).max(100).default(20),
+  status: import_zod34.z.enum(["new", "read", "replied"]).optional()
+});
+router33.post("/api/v1/public/portfolio/contact", submitRateLimiter, async (req, res, next) => {
+  try {
+    const { website, ...payload } = submitContactSchema.parse(req.body ?? {});
+    if (website && website.trim().length > 0) {
+      logger.info("Contact submission rejected by honeypot");
+      res.status(201).json({ message: SUBMIT_MESSAGE, id: null });
+      return;
+    }
+    const contact = await PortfolioContactModel.create({
+      ...payload,
+      ...attributionFrom(req),
+      // Timestamped server-side: a client clock is not evidence of when
+      // consent was given.
+      consentAt: payload.consentText ? /* @__PURE__ */ new Date() : null
+    });
+    await notifyNewLead(contact);
+    res.status(201).json({ message: SUBMIT_MESSAGE, id: contact._id });
   } catch (error) {
-    if (error instanceof import_zod29.z.ZodError) {
+    if (error instanceof import_zod34.z.ZodError) {
       next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid contact form data"));
       return;
     }
     next(error);
   }
 });
-router28.get("/api/v1/portfolio/contacts", authenticateJwt, async (req, res, next) => {
+router33.get("/api/v1/portfolio/contacts", authenticateJwt, requireRole(ADMIN_ROLES9), requireRbacPermission("/portfolio/contacts", "read"), async (req, res, next) => {
   try {
-    const { page, limit, status } = listQuerySchema4.parse(req.query ?? {});
+    const { page, limit, status } = listQuerySchema5.parse(req.query ?? {});
     const skip = (page - 1) * limit;
     const filter = {};
     if (status) filter.status = status;
@@ -14142,47 +15578,48 @@ router28.get("/api/v1/portfolio/contacts", authenticateJwt, async (req, res, nex
     next(error);
   }
 });
-router28.patch("/api/v1/portfolio/contacts/:id/status", authenticateJwt, async (req, res, next) => {
+router33.patch("/api/v1/portfolio/contacts/:id/status", authenticateJwt, requireRole(ADMIN_ROLES9), requireRbacPermission("/portfolio/contacts", "edit"), async (req, res, next) => {
   try {
-    ensureValidObjectId20(req.params.id);
-    const { status } = import_zod29.z.object({ status: import_zod29.z.enum(["new", "read", "replied"]) }).parse(req.body ?? {});
+    ensureValidObjectId21(req.params.id);
+    const { status } = import_zod34.z.object({ status: import_zod34.z.enum(["new", "read", "replied"]) }).parse(req.body ?? {});
     const updated = await PortfolioContactModel.findByIdAndUpdate(req.params.id, { $set: { status } }, { new: true }).lean().exec();
     if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Contact not found");
     res.json(updated);
   } catch (error) {
-    if (error instanceof import_zod29.z.ZodError) {
+    if (error instanceof import_zod34.z.ZodError) {
       next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid status value"));
       return;
     }
     next(error);
   }
 });
-var portfolioContactsRoutes = router28;
+var portfolioContactsRoutes = router33;
 
 // src/modules/portfolio/portfolio-masters.routes.ts
-var import_node_fs4 = __toESM(require("node:fs"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
-var import_express_rate_limit23 = __toESM(require("express-rate-limit"), 1);
-var import_express30 = require("express");
-var import_mongoose71 = __toESM(require("mongoose"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_crypto3 = require("node:crypto");
+var import_express_rate_limit28 = __toESM(require("express-rate-limit"), 1);
+var import_express35 = require("express");
+var import_mongoose82 = __toESM(require("mongoose"), 1);
 var import_multer2 = __toESM(require("multer"), 1);
-var import_blob = require("@vercel/blob");
-var import_zod30 = require("zod");
+var import_zod35 = require("zod");
 
 // src/modules/portfolio/portfolio-masters.models.ts
-var import_mongoose70 = __toESM(require("mongoose"), 1);
-var techStackSchema = new import_mongoose70.Schema(
+var import_mongoose81 = __toESM(require("mongoose"), 1);
+var techStackSchema = new import_mongoose81.Schema(
   {
     name: { type: String, required: true, trim: true, unique: true },
     image: { type: String, default: "" },
     description: { type: String, default: "" },
+    icon: { type: String, default: "" },
+    color: { type: String, default: "" },
     isActive: { type: Boolean, default: true },
     order: { type: Number, default: 0 }
   },
   { timestamps: true }
 );
-var TechStackModel = import_mongoose70.default.models.PortfolioTechStack ?? import_mongoose70.default.model("PortfolioTechStack", techStackSchema);
-var categorySchema = new import_mongoose70.Schema(
+var TechStackModel = import_mongoose81.default.models.PortfolioTechStack ?? import_mongoose81.default.model("PortfolioTechStack", techStackSchema);
+var categorySchema = new import_mongoose81.Schema(
   {
     name: { type: String, required: true, trim: true, unique: true },
     isActive: { type: Boolean, default: true },
@@ -14190,8 +15627,8 @@ var categorySchema = new import_mongoose70.Schema(
   },
   { timestamps: true }
 );
-var CategoryModel = import_mongoose70.default.models.PortfolioCategory ?? import_mongoose70.default.model("PortfolioCategory", categorySchema);
-var yearSchema = new import_mongoose70.Schema(
+var CategoryModel = import_mongoose81.default.models.PortfolioCategory ?? import_mongoose81.default.model("PortfolioCategory", categorySchema);
+var yearSchema = new import_mongoose81.Schema(
   {
     year: { type: String, required: true, trim: true, unique: true },
     isActive: { type: Boolean, default: true },
@@ -14199,8 +15636,8 @@ var yearSchema = new import_mongoose70.Schema(
   },
   { timestamps: true }
 );
-var YearModel = import_mongoose70.default.models.PortfolioYear ?? import_mongoose70.default.model("PortfolioYear", yearSchema);
-var clientSchema = new import_mongoose70.Schema(
+var YearModel = import_mongoose81.default.models.PortfolioYear ?? import_mongoose81.default.model("PortfolioYear", yearSchema);
+var clientSchema = new import_mongoose81.Schema(
   {
     name: { type: String, required: true, trim: true, unique: true },
     isActive: { type: Boolean, default: true },
@@ -14208,20 +15645,36 @@ var clientSchema = new import_mongoose70.Schema(
   },
   { timestamps: true }
 );
-var ClientModel = import_mongoose70.default.models.PortfolioClient ?? import_mongoose70.default.model("PortfolioClient", clientSchema);
+var ClientModel = import_mongoose81.default.models.PortfolioClient ?? import_mongoose81.default.model("PortfolioClient", clientSchema);
 
 // src/modules/portfolio/portfolio-masters.routes.ts
-var router29 = (0, import_express30.Router)();
-var writeRateLimiter4 = (0, import_express_rate_limit23.default)({ windowMs: 6e4, max: 60, standardHeaders: true, legacyHeaders: false });
-var uploadDir = import_node_path4.default.isAbsolute(env.FILE_UPLOAD_DIR) ? import_node_path4.default.join(env.FILE_UPLOAD_DIR, "portfolio") : import_node_path4.default.join(process.cwd(), env.FILE_UPLOAD_DIR, "portfolio");
-var useBlob = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-if (!useBlob) {
-  try {
-    import_node_fs4.default.mkdirSync(uploadDir, { recursive: true });
-  } catch {
-  }
+var ADMIN_ROLES10 = ["super_admin", "admin"];
+var IMAGE_UPLOAD_MENUS = [
+  "/portfolio/projects",
+  "/portfolio/team",
+  "/portfolio/settings",
+  "/portfolio/masters/tech-stacks",
+  // Client logos and testimonial avatars come through this same endpoint; a
+  // screen missing from this list gets working CRUD and a 403 on every upload.
+  "/portfolio/social-proof",
+  // Post cover images.
+  "/portfolio/posts",
+  // OG share images are uploaded from the SEO Manager through this same endpoint.
+  "/website/seo-manager"
+];
+var router34 = (0, import_express35.Router)();
+var writeRateLimiter9 = (0, import_express_rate_limit28.default)({ windowMs: 6e4, max: 60, standardHeaders: true, legacyHeaders: false });
+var ALLOWED_IMAGE_MIMES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+var MAGIC_BYTES = {
+  "image/jpeg": (b) => b.length > 3 && b[0] === 255 && b[1] === 216 && b[2] === 255,
+  "image/png": (b) => b.length > 8 && b.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+  "image/gif": (b) => b.length > 6 && b.subarray(0, 6).toString("ascii").startsWith("GIF8"),
+  "image/webp": (b) => b.length > 12 && b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP"
+};
+function contentMatchesMime(buffer, mimetype) {
+  const check = MAGIC_BYTES[mimetype];
+  return check ? check(buffer) : false;
 }
-var ALLOWED_IMAGE_MIMES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/svg+xml"]);
 var upload2 = (0, import_multer2.default)({
   storage: import_multer2.default.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
@@ -14233,45 +15686,53 @@ var upload2 = (0, import_multer2.default)({
     }
   }
 });
-router29.post(
+router34.post(
   "/api/v1/portfolio/upload/image",
-  writeRateLimiter4,
+  writeRateLimiter9,
   authenticateJwt,
+  requireRole(ADMIN_ROLES10),
+  requireAnyRbacPermission(IMAGE_UPLOAD_MENUS, "write"),
   upload2.single("image"),
   async (req, res, next) => {
     try {
       if (!req.file) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "No image uploaded");
-      const ext = import_node_path4.default.extname(req.file.originalname).toLowerCase() || ".bin";
-      const baseName = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-      if (useBlob) {
-        const blob = await (0, import_blob.put)(`portfolio/${baseName}`, req.file.buffer, {
-          access: "public",
-          contentType: req.file.mimetype
-        });
-        res.json({ url: blob.url });
-        return;
+      if (!contentMatchesMime(req.file.buffer, req.file.mimetype)) {
+        throw new AppError(
+          400,
+          ERROR_CODES.BAD_REQUEST,
+          "File content does not match its declared image type"
+        );
       }
-      const diskPath = import_node_path4.default.join(uploadDir, baseName);
-      import_node_fs4.default.writeFileSync(diskPath, req.file.buffer);
-      res.json({ url: `/uploads/portfolio/${baseName}` });
+      const ext = import_node_path5.default.extname(req.file.originalname).toLowerCase() || ".bin";
+      const url = await persistBuffer(
+        req.file.buffer,
+        `${(0, import_node_crypto3.randomUUID)()}${ext}`,
+        req.file.mimetype,
+        "portfolio"
+      );
+      res.json({ url });
     } catch (error) {
       next(error);
     }
   }
 );
 function ensureObjectId(id) {
-  if (!import_mongoose71.default.Types.ObjectId.isValid(id)) {
+  if (!import_mongoose82.default.Types.ObjectId.isValid(id)) {
     throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
   }
 }
-var techStackWriteSchema = import_zod30.z.object({
-  name: import_zod30.z.string().min(1).max(100).trim(),
-  image: import_zod30.z.string().max(2e3).default(""),
-  description: import_zod30.z.string().max(500).default(""),
-  isActive: import_zod30.z.boolean().default(true),
-  order: import_zod30.z.number().int().default(0)
+var techStackWriteSchema = import_zod35.z.object({
+  name: import_zod35.z.string().min(1).max(100).trim(),
+  image: import_zod35.z.string().max(2e3).default(""),
+  description: import_zod35.z.string().max(500).default(""),
+  icon: import_zod35.z.string().max(60).default(""),
+  // Hex only. The value is interpolated into an inline `color` style on the
+  // website, so anything accepted here is CSS that arrives from the database.
+  color: import_zod35.z.string().regex(/^#[0-9a-fA-F]{6}$/, "Colour must be a hex value such as #61DAFB").or(import_zod35.z.literal("")).default(""),
+  isActive: import_zod35.z.boolean().default(true),
+  order: import_zod35.z.number().int().default(0)
 });
-router29.get("/api/v1/public/portfolio/tech-stacks", async (_req, res, next) => {
+router34.get("/api/v1/public/portfolio/tech-stacks", async (_req, res, next) => {
   try {
     const items = await TechStackModel.find({ isActive: true }).sort({ order: 1, name: 1 }).lean().exec();
     res.json({ items });
@@ -14279,7 +15740,7 @@ router29.get("/api/v1/public/portfolio/tech-stacks", async (_req, res, next) => 
     next(error);
   }
 });
-router29.get("/api/v1/portfolio/tech-stacks", authenticateJwt, async (_req, res, next) => {
+router34.get("/api/v1/portfolio/tech-stacks", authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/masters/tech-stacks", "read"), async (_req, res, next) => {
   try {
     const items = await TechStackModel.find().sort({ order: 1, name: 1 }).lean().exec();
     res.json({ items });
@@ -14287,7 +15748,7 @@ router29.get("/api/v1/portfolio/tech-stacks", authenticateJwt, async (_req, res,
     next(error);
   }
 });
-router29.post("/api/v1/portfolio/tech-stacks", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.post("/api/v1/portfolio/tech-stacks", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/masters/tech-stacks", "write"), async (req, res, next) => {
   try {
     const payload = techStackWriteSchema.parse(req.body ?? {});
     const created = await TechStackModel.create(payload);
@@ -14296,7 +15757,7 @@ router29.post("/api/v1/portfolio/tech-stacks", writeRateLimiter4, authenticateJw
     next(error);
   }
 });
-router29.patch("/api/v1/portfolio/tech-stacks/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.patch("/api/v1/portfolio/tech-stacks/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/masters/tech-stacks", "edit"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const payload = techStackWriteSchema.partial().parse(req.body ?? {});
@@ -14307,7 +15768,7 @@ router29.patch("/api/v1/portfolio/tech-stacks/:id", writeRateLimiter4, authentic
     next(error);
   }
 });
-router29.delete("/api/v1/portfolio/tech-stacks/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.delete("/api/v1/portfolio/tech-stacks/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/masters/tech-stacks", "delete"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const item = await TechStackModel.findByIdAndDelete(req.params.id).exec();
@@ -14317,12 +15778,12 @@ router29.delete("/api/v1/portfolio/tech-stacks/:id", writeRateLimiter4, authenti
     next(error);
   }
 });
-var categoryWriteSchema = import_zod30.z.object({
-  name: import_zod30.z.string().min(1).max(100).trim(),
-  isActive: import_zod30.z.boolean().default(true),
-  order: import_zod30.z.number().int().default(0)
+var categoryWriteSchema = import_zod35.z.object({
+  name: import_zod35.z.string().min(1).max(100).trim(),
+  isActive: import_zod35.z.boolean().default(true),
+  order: import_zod35.z.number().int().default(0)
 });
-router29.get("/api/v1/public/portfolio/categories", async (_req, res, next) => {
+router34.get("/api/v1/public/portfolio/categories", async (_req, res, next) => {
   try {
     const items = await CategoryModel.find({ isActive: true }).sort({ order: 1, name: 1 }).lean().exec();
     res.json({ items });
@@ -14330,7 +15791,7 @@ router29.get("/api/v1/public/portfolio/categories", async (_req, res, next) => {
     next(error);
   }
 });
-router29.get("/api/v1/portfolio/categories", authenticateJwt, async (_req, res, next) => {
+router34.get("/api/v1/portfolio/categories", authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "read"), async (_req, res, next) => {
   try {
     const items = await CategoryModel.find().sort({ order: 1, name: 1 }).lean().exec();
     res.json({ items });
@@ -14338,7 +15799,7 @@ router29.get("/api/v1/portfolio/categories", authenticateJwt, async (_req, res, 
     next(error);
   }
 });
-router29.post("/api/v1/portfolio/categories", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.post("/api/v1/portfolio/categories", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "write"), async (req, res, next) => {
   try {
     const payload = categoryWriteSchema.parse(req.body ?? {});
     const created = await CategoryModel.create(payload);
@@ -14347,7 +15808,7 @@ router29.post("/api/v1/portfolio/categories", writeRateLimiter4, authenticateJwt
     next(error);
   }
 });
-router29.patch("/api/v1/portfolio/categories/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.patch("/api/v1/portfolio/categories/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "edit"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const payload = categoryWriteSchema.partial().parse(req.body ?? {});
@@ -14358,7 +15819,7 @@ router29.patch("/api/v1/portfolio/categories/:id", writeRateLimiter4, authentica
     next(error);
   }
 });
-router29.delete("/api/v1/portfolio/categories/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.delete("/api/v1/portfolio/categories/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "delete"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const item = await CategoryModel.findByIdAndDelete(req.params.id).exec();
@@ -14368,12 +15829,12 @@ router29.delete("/api/v1/portfolio/categories/:id", writeRateLimiter4, authentic
     next(error);
   }
 });
-var yearWriteSchema = import_zod30.z.object({
-  year: import_zod30.z.string().min(1).max(10).trim(),
-  isActive: import_zod30.z.boolean().default(true),
-  order: import_zod30.z.number().int().default(0)
+var yearWriteSchema = import_zod35.z.object({
+  year: import_zod35.z.string().min(1).max(10).trim(),
+  isActive: import_zod35.z.boolean().default(true),
+  order: import_zod35.z.number().int().default(0)
 });
-router29.get("/api/v1/public/portfolio/years", async (_req, res, next) => {
+router34.get("/api/v1/public/portfolio/years", async (_req, res, next) => {
   try {
     const items = await YearModel.find({ isActive: true }).sort({ order: 1, year: -1 }).lean().exec();
     res.json({ items });
@@ -14381,7 +15842,7 @@ router29.get("/api/v1/public/portfolio/years", async (_req, res, next) => {
     next(error);
   }
 });
-router29.get("/api/v1/portfolio/years", authenticateJwt, async (_req, res, next) => {
+router34.get("/api/v1/portfolio/years", authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "read"), async (_req, res, next) => {
   try {
     const items = await YearModel.find().sort({ order: 1, year: -1 }).lean().exec();
     res.json({ items });
@@ -14389,7 +15850,7 @@ router29.get("/api/v1/portfolio/years", authenticateJwt, async (_req, res, next)
     next(error);
   }
 });
-router29.post("/api/v1/portfolio/years", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.post("/api/v1/portfolio/years", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "write"), async (req, res, next) => {
   try {
     const payload = yearWriteSchema.parse(req.body ?? {});
     const created = await YearModel.create(payload);
@@ -14398,7 +15859,7 @@ router29.post("/api/v1/portfolio/years", writeRateLimiter4, authenticateJwt, asy
     next(error);
   }
 });
-router29.patch("/api/v1/portfolio/years/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.patch("/api/v1/portfolio/years/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "edit"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const payload = yearWriteSchema.partial().parse(req.body ?? {});
@@ -14409,7 +15870,7 @@ router29.patch("/api/v1/portfolio/years/:id", writeRateLimiter4, authenticateJwt
     next(error);
   }
 });
-router29.delete("/api/v1/portfolio/years/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.delete("/api/v1/portfolio/years/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "delete"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const item = await YearModel.findByIdAndDelete(req.params.id).exec();
@@ -14419,12 +15880,12 @@ router29.delete("/api/v1/portfolio/years/:id", writeRateLimiter4, authenticateJw
     next(error);
   }
 });
-var clientWriteSchema = import_zod30.z.object({
-  name: import_zod30.z.string().min(1).max(200).trim(),
-  isActive: import_zod30.z.boolean().default(true),
-  order: import_zod30.z.number().int().default(0)
+var clientWriteSchema = import_zod35.z.object({
+  name: import_zod35.z.string().min(1).max(200).trim(),
+  isActive: import_zod35.z.boolean().default(true),
+  order: import_zod35.z.number().int().default(0)
 });
-router29.get("/api/v1/public/portfolio/clients", async (_req, res, next) => {
+router34.get("/api/v1/public/portfolio/clients", async (_req, res, next) => {
   try {
     const items = await ClientModel.find({ isActive: true }).sort({ order: 1, name: 1 }).lean().exec();
     res.json({ items });
@@ -14432,7 +15893,7 @@ router29.get("/api/v1/public/portfolio/clients", async (_req, res, next) => {
     next(error);
   }
 });
-router29.get("/api/v1/portfolio/clients", authenticateJwt, async (_req, res, next) => {
+router34.get("/api/v1/portfolio/clients", authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "read"), async (_req, res, next) => {
   try {
     const items = await ClientModel.find().sort({ order: 1, name: 1 }).lean().exec();
     res.json({ items });
@@ -14440,7 +15901,7 @@ router29.get("/api/v1/portfolio/clients", authenticateJwt, async (_req, res, nex
     next(error);
   }
 });
-router29.post("/api/v1/portfolio/clients", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.post("/api/v1/portfolio/clients", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "write"), async (req, res, next) => {
   try {
     const payload = clientWriteSchema.parse(req.body ?? {});
     const created = await ClientModel.create(payload);
@@ -14449,7 +15910,7 @@ router29.post("/api/v1/portfolio/clients", writeRateLimiter4, authenticateJwt, a
     next(error);
   }
 });
-router29.patch("/api/v1/portfolio/clients/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.patch("/api/v1/portfolio/clients/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "edit"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const payload = clientWriteSchema.partial().parse(req.body ?? {});
@@ -14460,7 +15921,7 @@ router29.patch("/api/v1/portfolio/clients/:id", writeRateLimiter4, authenticateJ
     next(error);
   }
 });
-router29.delete("/api/v1/portfolio/clients/:id", writeRateLimiter4, authenticateJwt, async (req, res, next) => {
+router34.delete("/api/v1/portfolio/clients/:id", writeRateLimiter9, authenticateJwt, requireRole(ADMIN_ROLES10), requireRbacPermission("/portfolio/projects/masters", "delete"), async (req, res, next) => {
   try {
     ensureObjectId(req.params.id);
     const item = await ClientModel.findByIdAndDelete(req.params.id).exec();
@@ -14470,11 +15931,261 @@ router29.delete("/api/v1/portfolio/clients/:id", writeRateLimiter4, authenticate
     next(error);
   }
 });
-var portfolioMastersRoutes = router29;
+var portfolioMastersRoutes = router34;
+
+// src/modules/seo/seo-meta.routes.ts
+var import_express36 = require("express");
+var import_express_rate_limit29 = __toESM(require("express-rate-limit"), 1);
+var import_mongoose84 = __toESM(require("mongoose"), 1);
+var import_zod36 = require("zod");
+
+// src/modules/seo/seo-meta.model.ts
+var import_mongoose83 = __toESM(require("mongoose"), 1);
+var SEO_CATEGORIES = ["Marketing", "Detail", "Other"];
+function normalizeSlug(value) {
+  if (typeof value !== "string") return "";
+  let slug = value.trim();
+  if (!slug) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(slug) || slug.startsWith("//")) return "";
+  if (/\s/.test(slug)) return "";
+  slug = slug.split("?")[0].split("#")[0];
+  slug = slug.replace(/\/{2,}/g, "/");
+  if (!slug.startsWith("/")) slug = `/${slug}`;
+  if (slug.length > 1) slug = slug.replace(/\/+$/, "");
+  return (slug || "/").toLowerCase();
+}
+function isValidCanonicalUrl(value) {
+  if (typeof value !== "string") return false;
+  const url = value.trim();
+  if (!url) return true;
+  if (url.startsWith("/")) return !url.startsWith("//") && !/\s/.test(url);
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname.endsWith(".local")) {
+      return false;
+    }
+    return Boolean(parsed.hostname) && parsed.hostname.includes(".");
+  } catch {
+    return false;
+  }
+}
+var seoMetaSchema = new import_mongoose83.Schema(
+  {
+    // Uniqueness is declared once, on the explicit index below, and not also as
+    // `unique: true` here — Mongoose 8 treats those as two index definitions
+    // and warns about a duplicate on every boot.
+    slug: { type: String, required: true, trim: true },
+    /** Human label for the admin list ("Home", "Services"). */
+    pageTitle: { type: String, required: true, trim: true },
+    category: { type: String, enum: SEO_CATEGORIES, default: "Marketing" },
+    icon: { type: String, trim: true, default: "" },
+    metaTitle: { type: String, trim: true, default: "" },
+    metaDescription: { type: String, trim: true, default: "" },
+    /** Normalised to a de-duplicated array of non-empty strings on write. */
+    keywords: { type: [String], default: [] },
+    canonicalUrl: { type: String, trim: true, default: "" },
+    ogTitle: { type: String, trim: true, default: "" },
+    ogDescription: { type: String, trim: true, default: "" },
+    /** Opaque storage reference or absolute URL — callers must not parse it. */
+    ogImage: { type: String, trim: true, default: "" },
+    ogType: { type: String, trim: true, default: "website" },
+    /** Emits `robots: noindex`. */
+    noIndex: { type: Boolean, default: false },
+    /** Hides the row from the public read without deleting the copy. */
+    isActive: { type: Boolean, default: true }
+  },
+  { timestamps: true }
+);
+seoMetaSchema.index({ slug: 1 }, { unique: true });
+seoMetaSchema.index({ category: 1, slug: 1 });
+var SeoMetaModel = import_mongoose83.default.models.SeoMeta ?? import_mongoose83.default.model("SeoMeta", seoMetaSchema);
+
+// src/modules/seo/seo-meta.routes.ts
+var router35 = (0, import_express36.Router)();
+var ADMIN_ROLES11 = ["super_admin", "admin"];
+var SEO_MENU = "/website/seo-manager";
+var readRateLimiter3 = (0, import_express_rate_limit29.default)({
+  windowMs: 6e4,
+  max: 240,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var writeRateLimiter10 = (0, import_express_rate_limit29.default)({
+  windowMs: 6e4,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+var keywordsSchema = import_zod36.z.union([import_zod36.z.array(import_zod36.z.string()), import_zod36.z.string()]).optional().transform((value) => {
+  if (value === void 0) return void 0;
+  const raw = Array.isArray(value) ? value : value.split(",");
+  return [...new Set(raw.map((k) => k.trim()).filter(Boolean))];
+});
+var writeSchema = import_zod36.z.object({
+  slug: import_zod36.z.string().min(1).max(255),
+  pageTitle: import_zod36.z.string().min(1).max(120).trim(),
+  category: import_zod36.z.enum(SEO_CATEGORIES).default("Marketing"),
+  icon: import_zod36.z.string().max(100).default(""),
+  metaTitle: import_zod36.z.string().max(300).default(""),
+  metaDescription: import_zod36.z.string().max(600).default(""),
+  keywords: keywordsSchema,
+  canonicalUrl: import_zod36.z.string().max(2e3).default(""),
+  ogTitle: import_zod36.z.string().max(300).default(""),
+  ogDescription: import_zod36.z.string().max(600).default(""),
+  ogImage: import_zod36.z.string().max(2e3).default(""),
+  ogType: import_zod36.z.string().max(40).default("website"),
+  noIndex: import_zod36.z.boolean().default(false),
+  isActive: import_zod36.z.boolean().default(true)
+});
+var updateSchema5 = writeSchema.partial();
+function applyContracts(payload) {
+  if (payload.slug !== void 0) {
+    const slug = normalizeSlug(payload.slug);
+    if (!slug) {
+      throw new AppError(
+        400,
+        ERROR_CODES.BAD_REQUEST,
+        "Slug must be a route path such as /services, not a full URL"
+      );
+    }
+    payload.slug = slug;
+  }
+  if (payload.canonicalUrl !== void 0 && !isValidCanonicalUrl(payload.canonicalUrl)) {
+    throw new AppError(
+      400,
+      ERROR_CODES.BAD_REQUEST,
+      "Canonical URL must be a complete http(s) address or a path starting with /"
+    );
+  }
+  return payload;
+}
+function ensureObjectId2(id) {
+  if (!import_mongoose84.default.Types.ObjectId.isValid(id)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid id");
+  }
+}
+router35.get("/api/v1/public/seo", readRateLimiter3, async (req, res, next) => {
+  try {
+    const slug = normalizeSlug(req.query.slug);
+    if (!slug) {
+      res.json({ item: null });
+      return;
+    }
+    const item = await SeoMetaModel.findOne({ slug, isActive: true }).lean().exec();
+    res.json({ item: item ?? null });
+  } catch (error) {
+    next(error);
+  }
+});
+router35.get(
+  "/api/v1/seo",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES11),
+  requireRbacPermission(SEO_MENU, "read"),
+  async (_req, res, next) => {
+    try {
+      const items = await SeoMetaModel.find().sort({ category: 1, slug: 1 }).lean().exec();
+      res.json({ items });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router35.get(
+  "/api/v1/seo/:id",
+  authenticateJwt,
+  requireRole(ADMIN_ROLES11),
+  requireRbacPermission(SEO_MENU, "read"),
+  async (req, res, next) => {
+    try {
+      ensureObjectId2(req.params.id);
+      const item = await SeoMetaModel.findById(req.params.id).lean().exec();
+      if (!item) throw new AppError(404, ERROR_CODES.NOT_FOUND, "SEO row not found");
+      res.json(item);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+router35.post(
+  "/api/v1/seo",
+  writeRateLimiter10,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES11),
+  requireRbacPermission(SEO_MENU, "write"),
+  async (req, res, next) => {
+    try {
+      const payload = applyContracts(writeSchema.parse(req.body ?? {}));
+      const created = await SeoMetaModel.create(payload);
+      res.status(201).json(created.toObject());
+    } catch (error) {
+      if (error.code === 11e3) {
+        next(new AppError(400, ERROR_CODES.BAD_REQUEST, "A row already exists for that route"));
+        return;
+      }
+      next(error);
+    }
+  }
+);
+router35.patch(
+  "/api/v1/seo/:id",
+  writeRateLimiter10,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES11),
+  requireRbacPermission(SEO_MENU, "edit"),
+  async (req, res, next) => {
+    try {
+      ensureObjectId2(req.params.id);
+      const payload = applyContracts(updateSchema5.parse(req.body ?? {}));
+      const updated = await SeoMetaModel.findByIdAndUpdate(
+        req.params.id,
+        { $set: payload },
+        { new: true, runValidators: true }
+      ).lean().exec();
+      if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "SEO row not found");
+      res.json(updated);
+    } catch (error) {
+      if (error.code === 11e3) {
+        next(new AppError(400, ERROR_CODES.BAD_REQUEST, "A row already exists for that route"));
+        return;
+      }
+      next(error);
+    }
+  }
+);
+router35.delete(
+  "/api/v1/seo/:id",
+  writeRateLimiter10,
+  authenticateJwt,
+  requireRole(ADMIN_ROLES11),
+  requireRbacPermission(SEO_MENU, "delete"),
+  async (req, res, next) => {
+    try {
+      ensureObjectId2(req.params.id);
+      const removed = await SeoMetaModel.findByIdAndDelete(req.params.id).exec();
+      if (!removed) throw new AppError(404, ERROR_CODES.NOT_FOUND, "SEO row not found");
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+var seoRoutes = router35;
 
 // src/app.ts
 async function createApp() {
-  const app = (0, import_express31.default)();
+  const app = (0, import_express37.default)();
+  if (IS_SERVERLESS) {
+    logger.warn(
+      "Socket.IO is not available on the serverless entry point \u2014 real-time push (WhatsApp inbox) is inert. Clients must poll."
+    );
+  }
+  if (IS_SERVERLESS && !isSupabaseConfigured()) {
+    logger.warn(
+      "No object storage configured \u2014 image uploads will fail. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (the serverless filesystem is read-only)."
+    );
+  }
   const allowedOrigins = env.CORS_ORIGINS.split(",").map((item) => item.trim());
   let trustProxyValue = false;
   if (env.TRUST_PROXY === "true") {
@@ -14495,10 +16206,10 @@ async function createApp() {
       credentials: true
     })
   );
-  app.use("/uploads", import_express31.default.static(import_node_path5.default.join(process.cwd(), env.FILE_UPLOAD_DIR)));
+  app.use("/uploads", import_express37.default.static(import_node_path6.default.join(process.cwd(), env.FILE_UPLOAD_DIR)));
   app.use(paymentWebhookRoutes);
   app.use(whatsappWebhookRoutes);
-  app.use(import_express31.default.json({ limit: "256kb" }));
+  app.use(import_express37.default.json({ limit: "256kb" }));
   await mountSwagger(app);
   app.use(healthRoutes);
   app.use(authRoutes);
@@ -14527,15 +16238,21 @@ async function createApp() {
   app.use(portfolioProjectsRoutes);
   app.use(portfolioTeamRoutes);
   app.use(portfolioSettingsRoutes);
+  app.use(portfolioServicesRoutes);
+  app.use(portfolioSocialProofRoutes);
+  app.use(portfolioLegalRoutes);
+  app.use(portfolioFaqRoutes);
+  app.use(portfolioPostsRoutes);
   app.use(portfolioContactsRoutes);
   app.use(portfolioMastersRoutes);
+  app.use(seoRoutes);
   registerModuleRoutes(app, moduleManifests);
   app.use(errorHandler);
   return app;
 }
 
 // src/config/db.ts
-var import_mongoose72 = __toESM(require("mongoose"), 1);
+var import_mongoose85 = __toESM(require("mongoose"), 1);
 var globalCache = globalThis;
 if (!globalCache.__mongooseCache) {
   globalCache.__mongooseCache = { connection: null, promise: null };
@@ -14546,17 +16263,17 @@ async function connectDatabase() {
     return;
   }
   if (!cache.promise) {
-    import_mongoose72.default.connection.on("error", (err) => {
+    import_mongoose85.default.connection.on("error", (err) => {
       logger.error("MongoDB connection error", { error: err });
     });
-    import_mongoose72.default.connection.on("disconnected", () => {
+    import_mongoose85.default.connection.on("disconnected", () => {
       logger.warn("MongoDB disconnected");
       cache.connection = null;
     });
-    import_mongoose72.default.connection.on("reconnected", () => {
+    import_mongoose85.default.connection.on("reconnected", () => {
       logger.info("MongoDB reconnected");
     });
-    cache.promise = import_mongoose72.default.connect(env.MONGO_URI, {
+    cache.promise = import_mongoose85.default.connect(env.MONGO_URI, {
       serverSelectionTimeoutMS: 8e3,
       socketTimeoutMS: 45e3
     }).catch((err) => {
@@ -14732,6 +16449,454 @@ async function seedMenusIfEmpty(userId = "system") {
   return true;
 }
 
+// src/bootstrap/seed-rbac.ts
+var ADMIN_ROLE_NAME = "Administrator";
+var ACTION_NAMES = {
+  read: "Read",
+  write: "Write",
+  edit: "Edit",
+  delete: "Delete",
+  print: "Print",
+  mail: "Mail"
+};
+var SUPER_ADMIN_ONLY_MENUS = /* @__PURE__ */ new Set(["/portfolio/legal"]);
+var MENU_TREE = [
+  {
+    menuUrl: "#portfolio",
+    menuName: "Portfolio CMS",
+    icon: "LayoutDashboard",
+    sequence: 10,
+    children: [
+      { menuUrl: "/portfolio/projects", menuName: "Projects", icon: "FolderKanban", sequence: 1 },
+      { menuUrl: "/portfolio/team", menuName: "Team", icon: "Users", sequence: 2 },
+      { menuUrl: "/portfolio/contacts", menuName: "Contacts", icon: "Mail", sequence: 3 },
+      { menuUrl: "/portfolio/settings", menuName: "Site Settings", icon: "Settings", sequence: 4 },
+      // Must exist before requireRbacPermission("/portfolio/services", …) can
+      // ever pass: the guard resolves menus by URL, so an unseeded screen 403s
+      // for every non-super-admin regardless of what their role grants.
+      { menuUrl: "/portfolio/services", menuName: "Services", icon: "Layers", sequence: 7 },
+      { menuUrl: "/portfolio/social-proof", menuName: "Social Proof", icon: "Star", sequence: 8 },
+      // Seeded but never granted — see SUPER_ADMIN_ONLY_MENUS below.
+      { menuUrl: "/portfolio/legal", menuName: "Legal Documents", icon: "Scale", sequence: 9 },
+      { menuUrl: "/portfolio/faq", menuName: "FAQ", icon: "HelpCircle", sequence: 10 },
+      { menuUrl: "/portfolio/posts", menuName: "Insights", icon: "PenLine", sequence: 11 },
+      {
+        menuUrl: "/portfolio/projects/masters",
+        menuName: "Project Masters",
+        icon: "ListChecks",
+        sequence: 5
+      },
+      {
+        menuUrl: "/portfolio/masters/tech-stacks",
+        menuName: "Tech Stacks",
+        icon: "Layers",
+        sequence: 6
+      }
+    ]
+  },
+  {
+    menuUrl: "#website",
+    menuName: "Website",
+    icon: "FileEdit",
+    sequence: 20,
+    children: [
+      { menuUrl: "/website/seo-manager", menuName: "SEO Manager", icon: "Search", sequence: 1 }
+    ]
+  },
+  {
+    menuUrl: "#modules",
+    menuName: "Modules",
+    icon: "Layers",
+    sequence: 40,
+    children: [
+      { menuUrl: "/calendar", menuName: "Calendar", icon: "CalendarDays", sequence: 1 },
+      { menuUrl: "/chat", menuName: "Chat", icon: "MessageSquare", sequence: 2 },
+      { menuUrl: "/mailbox", menuName: "Mailbox", icon: "Mail", sequence: 3 },
+      { menuUrl: "/projects", menuName: "Projects", icon: "FolderKanban", sequence: 4 },
+      { menuUrl: "/tasks", menuName: "Tasks", icon: "CheckSquare", sequence: 5 },
+      { menuUrl: "/todo", menuName: "Todo", icon: "ListChecks", sequence: 6 },
+      { menuUrl: "/invoices", menuName: "Invoices", icon: "FileText", sequence: 7 },
+      { menuUrl: "/support-tickets", menuName: "Support Tickets", icon: "Headphones", sequence: 8 },
+      { menuUrl: "/file-manager", menuName: "File Manager", icon: "HardDrive", sequence: 9 },
+      { menuUrl: "/crm", menuName: "CRM", icon: "Users", sequence: 10 },
+      { menuUrl: "/ecommerce", menuName: "Ecommerce", icon: "ShoppingCart", sequence: 11 },
+      { menuUrl: "/job", menuName: "Jobs", icon: "Briefcase", sequence: 12 },
+      { menuUrl: "/api-management", menuName: "API Management", icon: "KeyRound", sequence: 13 },
+      // The fourteenth module. Its absence here is what would have made
+      // RBAC_MODULE_MODE=enforce a guaranteed 403 on every WhatsApp route:
+      // no menu row means no grant is expressible, for anyone.
+      { menuUrl: "/whatsapp", menuName: "WhatsApp", icon: "MessageSquare", sequence: 14 }
+    ]
+  },
+  {
+    menuUrl: "#settings",
+    menuName: "Settings",
+    icon: "Settings",
+    sequence: 80,
+    children: [
+      { menuUrl: "/settings/system", menuName: "System", icon: "Settings", sequence: 1 },
+      { menuUrl: "/settings/branding", menuName: "Branding", icon: "FileEdit", sequence: 2 },
+      { menuUrl: "/settings/users", menuName: "Users", icon: "Users", sequence: 3 },
+      { menuUrl: "/settings/payments", menuName: "Payments", icon: "ShoppingCart", sequence: 5 },
+      { menuUrl: "/settings/audit-log", menuName: "Audit Log", icon: "FileText", sequence: 6 },
+      {
+        menuUrl: "/settings/feature-toggles",
+        menuName: "Feature Toggles",
+        icon: "CheckSquare",
+        sequence: 7
+      },
+      {
+        menuUrl: "/settings/menu-management",
+        menuName: "Menu Management",
+        icon: "ListChecks",
+        sequence: 8
+      }
+    ]
+  },
+  {
+    menuUrl: "#access-control",
+    menuName: "Access Control",
+    icon: "KeyRound",
+    sequence: 90,
+    children: [
+      { menuUrl: "/rbac/menus", menuName: "Menus", icon: "ListChecks", sequence: 1 },
+      { menuUrl: "/rbac/actions", menuName: "Action Types", icon: "CheckSquare", sequence: 2 },
+      { menuUrl: "/rbac/roles", menuName: "Roles", icon: "KeyRound", sequence: 3 },
+      { menuUrl: "/rbac/employees", menuName: "Employees", icon: "Users", sequence: 4 },
+      { menuUrl: "/rbac/tasks", menuName: "Tasks", icon: "CheckSquare", sequence: 5 }
+    ]
+  }
+];
+async function seedActionTypes() {
+  let created = 0;
+  for (const actionCode of ACTION_CODES) {
+    const result = await ActionTypeModel.updateOne(
+      { clientCode: env.CLIENT_CODE, actionCode },
+      {
+        $setOnInsert: {
+          clientCode: env.CLIENT_CODE,
+          actionName: ACTION_NAMES[actionCode] ?? actionCode,
+          actionCode,
+          isActive: true
+        }
+      },
+      { upsert: true }
+    ).exec();
+    if (result.upsertedCount > 0) created += 1;
+  }
+  return created;
+}
+async function upsertMenu(menuUrl, fields) {
+  const existing = await MenuMasterModel.findOne({ clientCode: env.CLIENT_CODE, menuUrl }).select("_id").lean().exec();
+  if (existing) return { id: existing._id, created: false };
+  const doc = await MenuMasterModel.create({
+    clientCode: env.CLIENT_CODE,
+    menuUrl,
+    ...fields,
+    isActive: true,
+    createdBy: null,
+    updatedBy: "seed"
+  });
+  return { id: doc._id, created: true };
+}
+async function auditPromotion(options) {
+  logger.warn("Admin had no effective permissions \u2014 moved to the Administrator role", {
+    email: options.email,
+    reason: options.reason
+  });
+  try {
+    const { auditLogService: auditLogService2 } = await Promise.resolve().then(() => (init_audit_log_service(), audit_log_service_exports));
+    await auditLogService2.log({
+      action: "rbac.employee.seed_promoted",
+      entity: "Employee",
+      entityId: options.employeeId,
+      userId: "seed",
+      userEmail: options.email,
+      before: { roleId: options.before ? String(options.before) : null },
+      after: { roleId: String(options.after), reason: options.reason }
+    });
+  } catch (error) {
+    logger.error("Failed to audit a seed promotion", { error: String(error) });
+  }
+}
+async function backfillAdminEmployees(menuIds) {
+  const actions = await ActionTypeModel.find({ clientCode: env.CLIENT_CODE, isActive: true }).select("_id").lean().exec();
+  if (actions.length === 0 || menuIds.length === 0) return 0;
+  const permissions = menuIds.flatMap(
+    (menuId) => actions.map((action) => ({
+      menuId: String(menuId),
+      actionTypeId: String(action._id),
+      granted: true
+    }))
+  );
+  let role = await RoleMasterModel.findOne({
+    clientCode: env.CLIENT_CODE,
+    roleName: ADMIN_ROLE_NAME
+  }).select("_id permissions").lean().exec();
+  if (!role) {
+    const created2 = await RoleMasterModel.create({
+      clientCode: env.CLIENT_CODE,
+      roleName: ADMIN_ROLE_NAME,
+      permissions,
+      isActive: true,
+      createdBy: null,
+      updatedBy: "seed"
+    });
+    role = { _id: created2._id };
+  } else {
+    const known = new Set(
+      (role.permissions ?? []).map((p) => `${String(p.menuId)}:${String(p.actionTypeId)}`)
+    );
+    const additions = permissions.filter((p) => !known.has(`${p.menuId}:${p.actionTypeId}`));
+    if (additions.length > 0) {
+      await RoleMasterModel.updateOne(
+        { _id: role._id },
+        { $push: { permissions: { $each: additions } } }
+      ).exec();
+    }
+  }
+  const admins = await UserModel.find({ role: "admin" }).select("_id email").lean().exec();
+  let created = 0;
+  for (const admin of admins) {
+    const existing = await EmployeeModel.findOne({
+      $or: [{ userId: admin._id }, { emailOffice: admin.email }]
+    }).select("_id roleId accessLocked").lean().exec();
+    if (existing) {
+      const typed = existing;
+      if (typed.accessLocked) {
+        logger.info("Skipped zero-grant promotion \u2014 employee is access-locked", {
+          email: admin.email
+        });
+        continue;
+      }
+      const currentGrants = typed.roleId ? ((await RoleMasterModel.findById(typed.roleId).select("permissions").lean().exec())?.permissions ?? []).filter((p) => p.granted).length : 0;
+      if (currentGrants === 0) {
+        await EmployeeModel.updateOne({ _id: typed._id }, { $set: { roleId: role._id } }).exec();
+        await auditPromotion({
+          employeeId: String(typed._id),
+          email: admin.email,
+          before: typed.roleId ?? null,
+          after: role._id,
+          reason: "zero effective grants"
+        });
+        created += 1;
+      }
+      continue;
+    }
+    try {
+      await EmployeeModel.create({
+        clientCode: env.CLIENT_CODE,
+        userId: admin._id,
+        employeeName: admin.email.split("@")[0] ?? "Administrator",
+        emailOffice: admin.email,
+        department: "",
+        contact: "",
+        roleId: role._id,
+        parentEmployeeId: null,
+        ancestorIds: [],
+        isActive: true,
+        createdBy: null,
+        updatedBy: "seed"
+      });
+      created += 1;
+    } catch (error) {
+      if (error.code === 11e3) continue;
+      throw error;
+    }
+  }
+  return created;
+}
+async function seedRbacBaseline() {
+  const actionsCreated = await seedActionTypes();
+  let menusCreated = 0;
+  const grantableMenuIds = [];
+  for (const root of MENU_TREE) {
+    const children = root.children ?? [];
+    const existingChildren = await MenuMasterModel.find({
+      clientCode: env.CLIENT_CODE,
+      menuUrl: { $in: children.map((c) => c.menuUrl) }
+    }).select("_id menuUrl").lean().exec();
+    if (children.length > 0 && existingChildren.length === children.length) {
+      grantableMenuIds.push(
+        ...existingChildren.filter((c) => !SUPER_ADMIN_ONLY_MENUS.has(c.menuUrl)).map((c) => c._id)
+      );
+      continue;
+    }
+    const { id: rootId, created } = await upsertMenu(root.menuUrl, {
+      menuName: root.menuName,
+      icon: root.icon,
+      sequence: root.sequence,
+      isRoot: true,
+      isParentMenu: true,
+      parentMenu: null
+    });
+    if (created) menusCreated += 1;
+    for (const child of root.children ?? []) {
+      const childResult = await upsertMenu(child.menuUrl, {
+        menuName: child.menuName,
+        icon: child.icon,
+        sequence: child.sequence,
+        isRoot: false,
+        isParentMenu: false,
+        parentMenu: rootId
+      });
+      if (childResult.created) menusCreated += 1;
+      if (!SUPER_ADMIN_ONLY_MENUS.has(child.menuUrl)) {
+        grantableMenuIds.push(childResult.id);
+      }
+    }
+  }
+  const placeholderUrls = MENU_TREE.map((root) => root.menuUrl).filter((url) => url.startsWith("#"));
+  const emptyPlaceholders = await MenuMasterModel.find({
+    clientCode: env.CLIENT_CODE,
+    menuUrl: { $in: placeholderUrls }
+  }).select("_id menuUrl").lean().exec();
+  let removed = 0;
+  for (const placeholder of emptyPlaceholders) {
+    const childCount = await MenuMasterModel.countDocuments({ parentMenu: placeholder._id }).exec();
+    if (childCount === 0) {
+      await MenuMasterModel.deleteOne({ _id: placeholder._id }).exec();
+      removed += 1;
+    }
+  }
+  if (removed > 0) {
+    invalidateRbacLookups();
+    logger.info("Removed empty placeholder menu sections", { removed });
+  }
+  const employeesCreated = env.RBAC_BACKFILL_ENABLED ? await backfillAdminEmployees(grantableMenuIds) : 0;
+  if (!env.RBAC_BACKFILL_ENABLED) {
+    logger.info("RBAC admin backfill is disabled \u2014 no employee rows or roles were granted");
+  }
+  if (actionsCreated > 0 || menusCreated > 0) {
+    invalidateRbacLookups();
+  }
+  if (actionsCreated > 0 || menusCreated > 0 || employeesCreated > 0) {
+    logger.info("Seeded RBAC baseline", { actionsCreated, menusCreated, employeesCreated });
+  }
+}
+
+// src/modules/seo/seo.seed.ts
+var SEEDS = [
+  {
+    slug: "/",
+    pageTitle: "Home",
+    category: "Marketing",
+    metaTitle: "Nventra \u2014 High-Performance Web & Mobile Engineering",
+    metaDescription: "Nventra is an engineering collective building scalable web and mobile products for global brands."
+  },
+  {
+    slug: "/work",
+    pageTitle: "Work",
+    category: "Marketing",
+    metaTitle: "Engineering Work & Case Studies \u2014 Nventra",
+    metaDescription: "Selected engineering work by Nventra: web, mobile and backend projects delivered for global brands, with the outcomes each one measured."
+  },
+  {
+    slug: "/services",
+    pageTitle: "Services",
+    category: "Marketing",
+    metaTitle: "Services \u2014 App, Web, CRM and AI Engineering",
+    metaDescription: "App development, website building, CRM and admin panels, SEO and AI solutions, delivered by a senior engineering collective."
+  },
+  {
+    slug: "/how-we-work",
+    pageTitle: "How We Work",
+    category: "Marketing",
+    metaTitle: "How We Work \u2014 Our Delivery Process",
+    metaDescription: "Our delivery process phase by phase, from discovery through to launch and ongoing engineering support."
+  },
+  {
+    slug: "/team",
+    pageTitle: "Team",
+    category: "Marketing",
+    metaTitle: "The Team Behind Nventra",
+    metaDescription: "The engineers behind Nventra \u2014 their backgrounds, specialisms and the work they have shipped."
+  },
+  {
+    slug: "/about",
+    pageTitle: "About",
+    category: "Marketing",
+    metaTitle: "About Nventra \u2014 Vision, Mission and Values",
+    metaDescription: "Who Nventra is: the vision, mission and values behind how we build software for global brands."
+  },
+  {
+    slug: "/contact",
+    pageTitle: "Contact",
+    category: "Marketing",
+    metaTitle: "Contact Nventra \u2014 Start a Project",
+    metaDescription: "Start a project with Nventra. Book a 30-minute discovery call or tell us what you are building."
+  },
+  {
+    slug: "/projects/ai-attendance",
+    pageTitle: "Case study \u2014 AI Attendance",
+    category: "Detail",
+    metaTitle: "AI Attendance \u2014 Geo-Fenced, Proxy-Free Workforce Attendance",
+    metaDescription: "AI-verified, proxy-free attendance with geo-fenced validation across a city-scale public-sector workforce of 8,000+ employees."
+  },
+  {
+    slug: "/projects/ai-call-bot-hospital",
+    pageTitle: "Case study \u2014 AI Call Agent",
+    category: "Detail",
+    metaTitle: "AI Call Agent \u2014 Voice Triage for Hospital Front Desks",
+    metaDescription: "A low-latency AI call agent that answers, triages and routes hospital enquiries around the clock without adding front-desk headcount."
+  },
+  {
+    slug: "/projects/business-meet",
+    pageTitle: "Case study \u2014 Business Meet",
+    category: "Detail",
+    metaTitle: "Business Meet \u2014 AI-Ranked Professional Networking",
+    metaDescription: "AI-ranked professional recommendations with destination and date aware connections, turning travel calendars into qualified meetings."
+  },
+  {
+    slug: "/privacy",
+    pageTitle: "Privacy Policy",
+    category: "Other",
+    metaTitle: "Privacy Policy \u2014 Nventra",
+    metaDescription: "How Nventra collects, uses, stores and deletes the personal data you provide through this website."
+  },
+  {
+    slug: "/terms",
+    pageTitle: "Terms of Use",
+    category: "Other",
+    metaTitle: "Terms of Use \u2014 Nventra",
+    metaDescription: "The terms on which Nventra provides this website, and what the material published on it does and does not commit us to."
+  }
+];
+async function seedSeoMeta() {
+  let created = 0;
+  for (const seed of SEEDS) {
+    const slug = normalizeSlug(seed.slug);
+    if (!slug) continue;
+    const result = await SeoMetaModel.updateOne(
+      { slug },
+      {
+        // $setOnInsert, never $set: an edited row must survive every redeploy.
+        $setOnInsert: {
+          slug,
+          pageTitle: seed.pageTitle,
+          category: seed.category,
+          metaTitle: seed.metaTitle,
+          metaDescription: seed.metaDescription,
+          keywords: [],
+          canonicalUrl: "",
+          ogTitle: "",
+          ogDescription: "",
+          ogImage: "",
+          ogType: "website",
+          icon: "",
+          noIndex: false,
+          isActive: true
+        }
+      },
+      { upsert: true }
+    ).exec();
+    if (result.upsertedCount > 0) created += 1;
+  }
+  if (created > 0) {
+    logger.info("Seeded SEO rows", { created, clientCode: env.CLIENT_CODE });
+  }
+}
+
 // api-src/entry.ts
 var globalState = globalThis;
 if (!globalState.__serverState) {
@@ -14746,6 +16911,16 @@ async function getApp() {
         await seedMenusIfEmpty();
       } catch (err) {
         logger.warn("Menu seed skipped on cold start", { error: err });
+      }
+      try {
+        await seedRbacBaseline();
+      } catch (err) {
+        logger.error("RBAC seed failed on cold start \u2014 guarded routes will deny", { error: err });
+      }
+      try {
+        await seedSeoMeta();
+      } catch (err) {
+        logger.warn("SEO seed skipped on cold start", { error: err });
       }
       return await createApp();
     })().catch((err) => {

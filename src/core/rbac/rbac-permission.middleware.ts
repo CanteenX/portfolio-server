@@ -156,6 +156,14 @@ async function loadRoleFor(userId: string): Promise<GrantedRole | null> {
 export type PermissionAnswer = {
   menuFound: boolean;
   actionFound: boolean;
+  /**
+   * False when the caller has no employee record or no role on it. Kept apart
+   * from `allowed` for the same reason as the two above: "nobody gave you a
+   * role" is fixed by an admin assigning one, while "your role lacks this" is
+   * fixed by editing the role. A single 403 for both sends people to the wrong
+   * screen.
+   */
+  hasRole: boolean;
   allowed: boolean;
 };
 
@@ -169,18 +177,20 @@ export async function checkRbacPermission(
     resolveActionTypeId(actionCode)
   ]);
 
-  if (!menuId) return { menuFound: false, actionFound: Boolean(actionTypeId), allowed: false };
-  if (!actionTypeId) return { menuFound: true, actionFound: false, allowed: false };
+  if (!menuId) {
+    return { menuFound: false, actionFound: Boolean(actionTypeId), hasRole: true, allowed: false };
+  }
+  if (!actionTypeId) return { menuFound: true, actionFound: false, hasRole: true, allowed: false };
 
   const role = await loadRoleFor(userId);
-  if (!role) return { menuFound: true, actionFound: true, allowed: false };
+  if (!role) return { menuFound: true, actionFound: true, hasRole: false, allowed: false };
 
   const allowed = role.permissions.some(
     (entry) =>
       entry.granted && String(entry.menuId) === menuId && String(entry.actionTypeId) === actionTypeId
   );
 
-  return { menuFound: true, actionFound: true, allowed };
+  return { menuFound: true, actionFound: true, hasRole: true, allowed };
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -219,6 +229,17 @@ export function requireRbacPermission(menuUrl: string, actionCode: ActionCode) {
           actionFound: answer.actionFound
         });
         next(new AppError(403, ERROR_CODES.FORBIDDEN, "Permission denied"));
+        return;
+      }
+
+      if (!answer.hasRole) {
+        next(
+          new AppError(
+            403,
+            ERROR_CODES.FORBIDDEN,
+            "You have no role assigned — ask a super admin to assign one."
+          )
+        );
         return;
       }
 

@@ -1,5 +1,28 @@
 import mongoose, { Schema } from "mongoose";
 
+/**
+ * A page's or section's heading block.
+ *
+ * Same shape as the per-project headings added in B-4, for the same reason:
+ * every marketing page on the site opened with an eyebrow, an <h1> and a lead
+ * paragraph hardcoded in its view file, so the words a visitor reads first were
+ * the words only a deploy could change.
+ *
+ * Fields are individually optional. An empty string means "use the shipped
+ * copy", so a half-finished edit cannot blank a heading.
+ */
+export type PageCopy = {
+  eyebrow: string;
+  title: string;
+  lead: string;
+};
+
+const pageCopySchema = {
+  eyebrow: { type: String, default: "" },
+  title: { type: String, default: "" },
+  lead: { type: String, default: "" }
+};
+
 export type PortfolioSettingsDocument = {
   hero: {
     tagline: string;
@@ -19,7 +42,6 @@ export type PortfolioSettingsDocument = {
     links: { label: string; href: string }[];
   };
   techMarquee: string[];
-  services: string[];
   callSlots: string[];
   about: {
     vision: string;
@@ -35,6 +57,57 @@ export type PortfolioSettingsDocument = {
   contactInfo: {
     email: string;
     phone: string;
+  };
+  /** Headings for the pages that are a single composition rather than a list. */
+  pageCopy: {
+    work?: PageCopy;
+    services?: PageCopy;
+    team?: PageCopy;
+    about?: PageCopy;
+    process?: PageCopy;
+    contact?: PageCopy;
+    insights?: PageCopy;
+    faq?: PageCopy;
+  };
+  /**
+   * The closing call to action, which appears on nine routes.
+   *
+   * It was one hardcoded component, so the site's most repeated sentence was
+   * also its least editable.
+   */
+  contactCta: {
+    eyebrow: string;
+    title: string;
+    lead: string;
+    primary: { label: string; href: string };
+    secondary: { label: string; href: string };
+  };
+  /**
+   * The enquiry form's two qualification dropdowns.
+   *
+   * Editable because they are commercial positioning, not UI: the bands decide
+   * which enquiries arrive, and a band that no longer matches what the company
+   * takes on is a lead-quality problem the marketing owner should be able to fix
+   * without an engineer.
+   */
+  contactForm: {
+    budgetBands: string[];
+    timelines: string[];
+  };
+  /**
+   * The engagement-model block on /how-we-work (B-7b).
+   *
+   * Deliberately bands and durations rather than a price list — the point is to
+   * stop a qualified buyer leaving because they cannot tell whether they can
+   * afford a conversation. Empty `bands` collapses the section entirely, so the
+   * decision to publish commercials at all stays with the owner.
+   */
+  engagement: {
+    eyebrow: string;
+    title: string;
+    lead: string;
+    bands: { name: string; range: string; duration: string; description: string }[];
+    footnote: string;
   };
   isActive: boolean;
 };
@@ -60,7 +133,7 @@ const portfolioSettingsSchema = new Schema<PortfolioSettingsDocument>(
       }
     },
     navbar: {
-      brandName: { type: String, default: "FORGE_COLLECTIVE" },
+      brandName: { type: String, default: "NVENTRA" },
       links: {
         type: [{ label: { type: String }, href: { type: String } }],
         default: []
@@ -76,7 +149,9 @@ const portfolioSettingsSchema = new Schema<PortfolioSettingsDocument>(
       }
     },
     techMarquee: { type: [String], default: [] },
-    services: { type: [String], default: [] },
+    // `services` was removed here deliberately — see PortfolioService. Existing
+    // documents may still carry the field; it is ignored on read and stripped
+    // on the next save.
     callSlots: { type: [String], default: [] },
     about: {
       vision: { type: String, default: "" },
@@ -124,6 +199,47 @@ const portfolioSettingsSchema = new Schema<PortfolioSettingsDocument>(
     contactInfo: {
       email: { type: String, default: "" },
       phone: { type: String, default: "" }
+    },
+    pageCopy: {
+      type: {
+        work: { type: pageCopySchema, default: undefined },
+        services: { type: pageCopySchema, default: undefined },
+        team: { type: pageCopySchema, default: undefined },
+        about: { type: pageCopySchema, default: undefined },
+        process: { type: pageCopySchema, default: undefined },
+        contact: { type: pageCopySchema, default: undefined },
+        insights: { type: pageCopySchema, default: undefined },
+        faq: { type: pageCopySchema, default: undefined }
+      },
+      default: {}
+    },
+    contactCta: {
+      eyebrow: { type: String, default: "" },
+      title: { type: String, default: "" },
+      lead: { type: String, default: "" },
+      primary: { label: { type: String, default: "" }, href: { type: String, default: "" } },
+      secondary: { label: { type: String, default: "" }, href: { type: String, default: "" } }
+    },
+    contactForm: {
+      budgetBands: { type: [String], default: [] },
+      timelines: { type: [String], default: [] }
+    },
+    engagement: {
+      eyebrow: { type: String, default: "" },
+      title: { type: String, default: "" },
+      lead: { type: String, default: "" },
+      bands: {
+        type: [
+          {
+            name: { type: String, default: "" },
+            range: { type: String, default: "" },
+            duration: { type: String, default: "" },
+            description: { type: String, default: "" }
+          }
+        ],
+        default: []
+      },
+      footnote: { type: String, default: "" }
     },
     isActive: { type: Boolean, default: true }
   },

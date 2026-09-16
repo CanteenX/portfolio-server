@@ -8,6 +8,7 @@ import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
 import { requireRole } from "../../core/rbac/role.middleware";
 import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+import { revalidateWebsite, SETTINGS_PATHS } from "../../core/revalidate/revalidate.service";
 
 /** Both roles may reach these routes; what they may DO is decided per menu. */
 const ADMIN_ROLES: RoleKey[] = ["super_admin", "admin"];
@@ -30,6 +31,17 @@ const statSchema = z.object({ label: z.string(), value: z.string() });
 const phaseSchema = z.object({ id: z.string(), n: z.string(), title: z.string(), description: z.string(), accent: z.string(), dot: z.string() });
 const perkSchema = z.object({ title: z.string(), description: z.string(), icon: z.string(), gradient: z.string(), border: z.string() });
 const playbookSchema = z.object({ phase: z.string(), name: z.string(), body: z.string() });
+const pageCopySchema = z.object({
+  eyebrow: z.string().default(""),
+  title: z.string().default(""),
+  lead: z.string().default("")
+});
+const engagementBandSchema = z.object({
+  name: z.string(),
+  range: z.string(),
+  duration: z.string(),
+  description: z.string()
+});
 
 const settingsSchema = z.object({
   hero: z.object({
@@ -40,7 +52,7 @@ const settingsSchema = z.object({
     featuredProjects: z.array(featuredProjectSchema).default([])
   }).default({}),
   navbar: z.object({
-    brandName: z.string().default("FORGE_COLLECTIVE"),
+    brandName: z.string().default("NVENTRA"),
     links: z.array(linkSchema).default([])
   }).default({}),
   footer: z.object({
@@ -50,7 +62,8 @@ const settingsSchema = z.object({
     links: z.array(linkSchema).default([])
   }).default({}),
   techMarquee: z.array(z.string()).default([]),
-  services: z.array(z.string()).default([]),
+  // No `services`: Zod strips unknown keys, so an older admin build still
+  // sending the field is accepted and the field is dropped rather than 400ing.
   callSlots: z.array(z.string()).default([]),
   about: z.object({
     vision: z.string().default(""),
@@ -66,6 +79,34 @@ const settingsSchema = z.object({
   contactInfo: z.object({
     email: z.string().default(""),
     phone: z.string().default("")
+  }).default({}),
+  pageCopy: z.object({
+    work: pageCopySchema.optional(),
+    services: pageCopySchema.optional(),
+    team: pageCopySchema.optional(),
+    about: pageCopySchema.optional(),
+    process: pageCopySchema.optional(),
+    contact: pageCopySchema.optional(),
+    insights: pageCopySchema.optional(),
+    faq: pageCopySchema.optional()
+  }).default({}),
+  contactCta: z.object({
+    eyebrow: z.string().default(""),
+    title: z.string().default(""),
+    lead: z.string().default(""),
+    primary: z.object({ label: z.string(), href: z.string() }).default({ label: "", href: "" }),
+    secondary: z.object({ label: z.string(), href: z.string() }).default({ label: "", href: "" })
+  }).default({}),
+  contactForm: z.object({
+    budgetBands: z.array(z.string()).default([]),
+    timelines: z.array(z.string()).default([])
+  }).default({}),
+  engagement: z.object({
+    eyebrow: z.string().default(""),
+    title: z.string().default(""),
+    lead: z.string().default(""),
+    bands: z.array(engagementBandSchema).default([]),
+    footnote: z.string().default("")
   }).default({}),
   isActive: z.boolean().default(true)
 });
@@ -117,6 +158,11 @@ router.put("/api/v1/portfolio/settings", writeRateLimiter, authenticateJwt, requ
     )
       .lean()
       .exec();
+
+    // Settings feed the navbar, footer and hero on every route, so a change
+    // here is a change everywhere.
+    revalidateWebsite(SETTINGS_PATHS);
+
     res.json(updated);
   } catch (error) {
     if (error instanceof z.ZodError) {

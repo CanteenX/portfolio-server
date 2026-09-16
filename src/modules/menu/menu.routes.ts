@@ -6,6 +6,8 @@ import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { AppError } from "../../core/errors/app-error";
 import { ERROR_CODES } from "@admin-platform/shared-types";
 import { requireRole } from "../../core/rbac/role.middleware";
+import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+import type { ActionCode } from "../../core/rbac/rbac-permission.middleware";
 import { menuService } from "./menu.service";
 
 const router = Router();
@@ -16,6 +18,24 @@ const menuWriteRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+/**
+ * Sidebar editing is delegable.
+ *
+ * These routes shape the navigation, not who may reach what: a group here is a
+ * heading, and hiding one revokes nothing. `requireRbacPermission` resolves
+ * grants against MenuMaster rows, which live in a different collection and are
+ * edited on the RBAC screens. Keeping sidebar tidy-ups behind the super admin
+ * bought no safety and turned every reordering into a request.
+ */
+const MENU_MANAGEMENT = "/settings/menu-management";
+
+const canEditMenus = (action: ActionCode) => [
+  menuWriteRateLimiter,
+  authenticateJwt,
+  requireRole(["super_admin", "admin"]),
+  requireRbacPermission(MENU_MANAGEMENT, action)
+];
 
 // ── Validation Schemas ─────────────────────────────────────────────
 
@@ -79,12 +99,10 @@ router.get(
   }
 );
 
-// Create group (super_admin)
+// Create group
 router.post(
   "/api/v1/menus/groups",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("write"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const payload = createGroupSchema.parse(req.body ?? {});
@@ -100,12 +118,10 @@ router.post(
   }
 );
 
-// Update group (super_admin)
+// Update group
 router.put(
   "/api/v1/menus/groups/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const payload = updateGroupSchema.parse(req.body ?? {});
@@ -125,12 +141,10 @@ router.put(
   }
 );
 
-// Delete group (super_admin)
+// Delete group
 router.delete(
   "/api/v1/menus/groups/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("delete"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const deleted = await menuService.deleteGroup(req.params.id);
@@ -145,12 +159,10 @@ router.delete(
   }
 );
 
-// Create menu item (super_admin)
+// Create menu item
 router.post(
   "/api/v1/menus/items",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("write"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const payload = createItemSchema.parse(req.body ?? {});
@@ -166,12 +178,10 @@ router.post(
   }
 );
 
-// Update menu item (super_admin)
+// Update menu item
 router.put(
   "/api/v1/menus/items/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const payload = updateItemSchema.parse(req.body ?? {});
@@ -191,12 +201,10 @@ router.put(
   }
 );
 
-// Delete menu item (super_admin)
+// Delete menu item
 router.delete(
   "/api/v1/menus/items/:id",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("delete"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const deleted = await menuService.deleteItem(req.params.id);
@@ -211,12 +219,10 @@ router.delete(
   }
 );
 
-// Reorder menu item (super_admin)
+// Reorder menu item
 router.patch(
   "/api/v1/menus/items/:id/reorder",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const { order } = reorderSchema.parse(req.body ?? {});
@@ -236,12 +242,10 @@ router.patch(
   }
 );
 
-// Reorder menu group (super_admin)
+// Reorder menu group
 router.patch(
   "/api/v1/menus/groups/:id/reorder",
-  menuWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
+  ...canEditMenus("edit"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const { order } = reorderSchema.parse(req.body ?? {});

@@ -17,7 +17,10 @@ import { featureConfigService } from "../../core/feature-flags/feature-config.se
 import { uiFeatureFlagsService } from "../../core/feature-flags/ui-feature-flags.service";
 import { UI_FEATURE_FLAG_KEYS } from "@admin-platform/shared-types";
 import { requireRole } from "../../core/rbac/role.middleware";
-import { buildRbacSnapshot } from "../../core/rbac/rbac-permission.middleware";
+import {
+  buildRbacSnapshot,
+  requireRbacPermission
+} from "../../core/rbac/rbac-permission.middleware";
 import { getPermissionsByRole } from "../../core/rbac/permissions";
 import { ERROR_CODES } from "@admin-platform/shared-types";
 import { env } from "../../config/env";
@@ -29,7 +32,6 @@ import { CrmDealModel } from "../crm/crm.models";
 import { JobPostingModel, JobApplicationModel } from "../job/job.models";
 import { systemSettingsService } from "./system-settings.service";
 import { brandingService } from "./branding.service";
-import { customRoleService } from "../../core/rbac/custom-role.service";
 import { menuService } from "../menu/menu.service";
 import { quickLinksService } from "./quick-links.service";
 import { notificationService } from "./notification.service";
@@ -58,29 +60,12 @@ router.get(
     try {
       const features = await featureConfigService.getEnabledFeatures();
       const role = req.user!.role;
-      let permissions = getPermissionsByRole(role);
-
-      // If admin has a custom role, restrict permissions to that role's set
-      let customRole: { id: string; name: string } | undefined;
-      if (role === "admin") {
-        const userDoc = (await UserModel.findById(req.user!.id)
-          .lean()
-          .exec()) as unknown as { customRoleId?: string } | null;
-        if (userDoc?.customRoleId) {
-          const crPerms = await customRoleService.getPermissionsForRole(
-            userDoc.customRoleId,
-          );
-          if (crPerms) {
-            permissions = crPerms;
-            const crDetails = await customRoleService.getById(
-              userDoc.customRoleId,
-            );
-            if (crDetails) {
-              customRole = { id: crDetails.id, name: crDetails.name };
-            }
-          }
-        }
-      }
+      // A-6: CustomRole used to narrow this list for admins holding a
+      // customRoleId. It was retired because it narrowed only the payload —
+      // `requirePermission` never consulted it, so the API stayed fully open to
+      // any admin while the UI pretended otherwise. `rbacPermissions` below is
+      // the real authority and is what every screen now gates on.
+      const permissions = getPermissionsByRole(role);
 
       const [uiFeatureFlags, menuGroups, rbac] = await Promise.all([
         uiFeatureFlagsService.getFlags(),
@@ -89,20 +74,6 @@ router.get(
         // endpoint cannot disagree about what this user may do.
         buildRbacSnapshot(req.user!.id, role),
       ]);
-
-      // For admin with custom role, include structured permissions
-      let currentRolePermissions;
-      if (role === "admin" && customRole) {
-        const userDoc2 = (await UserModel.findById(req.user!.id)
-          .lean()
-          .exec()) as unknown as { customRoleId?: string } | null;
-        if (userDoc2?.customRoleId) {
-          currentRolePermissions =
-            await customRoleService.getStructuredPermissions(
-              userDoc2.customRoleId,
-            );
-        }
-      }
 
       res.json({
         user: req.user,
@@ -114,9 +85,7 @@ router.get(
         rbacAllowedMenus: rbac.allowedMenus,
         rbacRoleName: rbac.roleName,
         employeeId: rbac.employeeId,
-        ...(currentRolePermissions ? { currentRolePermissions } : {}),
         moduleCatalog: MODULE_DEFINITIONS,
-        ...(customRole ? { customRole } : {}),
       });
     } catch (error) {
       next(error);
@@ -149,6 +118,10 @@ router.get(
   },
 );
 
+// SUPER-ADMIN ONLY BY DESIGN: disabling a module 404s its API and removes it
+// from every sidebar at once. The blast radius is the whole tenant, and the
+// symptom — a module that simply vanished — is not obviously a permissions
+// change to whoever has to diagnose it.
 router.put(
   "/api/v1/system/feature-config",
   systemWriteRateLimiter,
@@ -215,6 +188,9 @@ router.get(
   },
 );
 
+// SUPER-ADMIN ONLY BY DESIGN: these 30+ toggles can hide navigation and whole
+// pages for every user. Reading them is delegable (the GET above allows any
+// admin); flipping them is how someone hides a screen from their own boss.
 router.put(
   "/api/v1/system/ui-feature-flags",
   systemWriteRateLimiter,
@@ -257,10 +233,16 @@ router.put(
 
 // ── Payment settings (super_admin only) ──────────────────────────
 
+/**
+ * Delegable, read-only. Returns whether each provider is configured and its
+ * webhook path — never a secret — so someone diagnosing a failed checkout does
+ * not need the super admin to read a status page to them.
+ */
 router.get(
   "/api/v1/system/payment-settings",
   authenticateJwt,
-  requireRole(["super_admin"]),
+  requireRole(["super_admin", "admin"]),
+  requireRbacPermission("/settings/payments", "read"),
   (_req, res) => {
     const providers = PAYMENT_PROVIDER_KEYS.map((id) => {
       const configured =
@@ -363,6 +345,10 @@ router.get(
 
 // ── Audit log (super_admin only) ────────────────────────────────
 
+// SUPER-ADMIN ONLY BY DESIGN: the audit log is the record of what everyone
+// else did, including the before/after of privilege changes. Someone who can
+// read it can see exactly which grants to ask for, and it is the only place a
+// misuse of this system leaves a trace.
 router.get(
   "/api/v1/system/audit-log",
   authenticateJwt,
@@ -404,6 +390,9 @@ router.get(
 );
 
 router.put(
+  // SUPER-ADMIN ONLY BY DESIGN: timezone and currency silently reinterpret
+  // every stored date and amount in the panel. Nothing visibly breaks, which
+  // is what makes it a bad thing to hand out.
   "/api/v1/system/settings",
   systemWriteRateLimiter,
   authenticateJwt,
@@ -440,206 +429,6 @@ router.put(
   },
 );
 
-// ── Custom roles / sub-roles (super_admin only) ───────────────
-
-const customRoleSchema = z.object({
-  name: z.string().min(1).max(60),
-  permissions: z.array(z.string().min(1)),
-});
-
-router.get(
-  "/api/v1/system/custom-roles",
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (_req, res, next) => {
-    try {
-      const roles = await customRoleService.list();
-      res.json({ roles });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-router.post(
-  "/api/v1/system/custom-roles",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req: AuthenticatedRequest, res, next) => {
-    try {
-      const payload = customRoleSchema.parse(req.body ?? {});
-      const role = await customRoleService.create(payload, req.user!.id);
-      res.status(201).json(role);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        next(
-          new AppError(
-            400,
-            ERROR_CODES.BAD_REQUEST,
-            "Invalid custom role payload",
-          ),
-        );
-        return;
-      }
-      next(error);
-    }
-  },
-);
-
-router.put(
-  "/api/v1/system/custom-roles/:id",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req: AuthenticatedRequest, res, next) => {
-    try {
-      const payload = customRoleSchema.parse(req.body ?? {});
-      const role = await customRoleService.update(
-        req.params.id,
-        payload,
-        req.user!.id,
-      );
-      if (!role) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      res.json(role);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        next(
-          new AppError(
-            400,
-            ERROR_CODES.BAD_REQUEST,
-            "Invalid custom role payload",
-          ),
-        );
-        return;
-      }
-      next(error);
-    }
-  },
-);
-
-router.delete(
-  "/api/v1/system/custom-roles/:id",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req: AuthenticatedRequest, res, next) => {
-    try {
-      const deleted = await customRoleService.remove(req.params.id);
-      if (!deleted) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      // Unassign from any users who had this role
-      await UserModel.updateMany(
-        { customRoleId: req.params.id },
-        { $unset: { customRoleId: 1 } },
-      );
-      res.json({ deleted: true });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-// ── Structured permissions per role ─────────────────────────────
-
-const structuredPermissionsSchema = z.object({
-  permissions: z.array(
-    z.object({
-      menuId: z.string().optional(),
-      menuGroupId: z.string().optional(),
-      read: z.boolean(),
-      create: z.boolean(),
-      update: z.boolean(),
-      delete: z.boolean(),
-      export: z.boolean(),
-    }),
-  ),
-});
-
-router.get(
-  "/api/v1/system/custom-roles/:id/permissions",
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req: AuthenticatedRequest, res, next) => {
-    try {
-      const perms = await customRoleService.getStructuredPermissions(
-        req.params.id,
-      );
-      if (perms === null) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-      res.json({ permissions: perms });
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-router.put(
-  "/api/v1/system/custom-roles/:id/permissions",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req: AuthenticatedRequest, res, next) => {
-    try {
-      const { permissions } = structuredPermissionsSchema.parse(req.body ?? {});
-      const previous = await customRoleService.getStructuredPermissions(
-        req.params.id,
-      );
-      if (previous === null) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-
-      const updated = await customRoleService.updateStructuredPermissions(
-        req.params.id,
-        permissions,
-        req.user!.id,
-      );
-
-      if (!updated) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"));
-        return;
-      }
-
-      await auditLogService.log({
-        action: "custom_role.permissions_update",
-        entity: "custom_role",
-        userId: req.user!.id,
-        userEmail: req.user!.email,
-        before: {
-          roleId: req.params.id,
-          permissions: previous,
-        } as unknown as Record<string, unknown>,
-        after: {
-          roleId: req.params.id,
-          permissions: updated.structuredPermissions,
-        } as unknown as Record<string, unknown>,
-      });
-
-      res.json(updated);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        next(
-          new AppError(
-            400,
-            ERROR_CODES.BAD_REQUEST,
-            "Invalid permissions payload",
-          ),
-        );
-        return;
-      }
-      next(error);
-    }
-  },
-);
-
 // ── User management (super_admin only) ────────────────────────
 
 const createUserSchema = z.object({
@@ -654,6 +443,9 @@ const updateUserSchema = z.object({
   role: z.enum(["super_admin", "admin"]).optional(),
 });
 
+// SUPER-ADMIN ONLY BY DESIGN: the full account list, across every department.
+// Admins who need to see their own people have `GET /api/v1/rbac/employees`,
+// which is scoped to their subtree.
 router.get(
   "/api/v1/system/users",
   authenticateJwt,
@@ -668,6 +460,16 @@ router.get(
   },
 );
 
+/**
+ * SUPER-ADMIN ONLY BY DESIGN: creating a login is creating an identity, and an
+ * admin who can mint accounts can mint one for themselves.
+ *
+ * Prefer `POST /api/v1/rbac/employees` for anyone who needs to use the panel.
+ * This endpoint creates a User and nothing else — no Employee row, so no role,
+ * and under enforcement that account can reach no screen at all. It survives
+ * for service accounts and for repairing a login whose employee record already
+ * exists.
+ */
 router.post(
   "/api/v1/system/users",
   systemWriteRateLimiter,
@@ -713,6 +515,9 @@ router.post(
   },
 );
 
+// SUPER-ADMIN ONLY BY DESIGN: this sets passwords and the base role. A
+// password reset is an account takeover by another name — it needs no
+// cooperation from the account's owner and leaves them locked out.
 router.put(
   "/api/v1/system/users/:userId",
   systemWriteRateLimiter,
@@ -770,6 +575,9 @@ router.put(
   },
 );
 
+// SUPER-ADMIN ONLY BY DESIGN: deleting a login is irreversible and orphans
+// whatever that account authored. Deactivation via
+// `PUT /api/v1/rbac/employees/:id/status` is the delegable equivalent.
 router.delete(
   "/api/v1/system/users/:userId",
   systemWriteRateLimiter,
@@ -807,52 +615,6 @@ router.delete(
 
       res.json({ deleted: true });
     } catch (error) {
-      next(error);
-    }
-  },
-);
-
-router.put(
-  "/api/v1/system/users/:userId/custom-role",
-  systemWriteRateLimiter,
-  authenticateJwt,
-  requireRole(["super_admin"]),
-  async (req: AuthenticatedRequest, res, next) => {
-    try {
-      const { customRoleId } = z
-        .object({
-          customRoleId: z.string().min(1).nullable(),
-        })
-        .parse(req.body ?? {});
-
-      if (customRoleId) {
-        const role = await customRoleService.getById(customRoleId);
-        if (!role) {
-          next(
-            new AppError(404, ERROR_CODES.NOT_FOUND, "Custom role not found"),
-          );
-          return;
-        }
-      }
-
-      const result = await UserModel.updateOne(
-        { _id: req.params.userId },
-        customRoleId
-          ? { $set: { customRoleId } }
-          : { $unset: { customRoleId: 1 } },
-      );
-
-      if (result.matchedCount === 0) {
-        next(new AppError(404, ERROR_CODES.NOT_FOUND, "User not found"));
-        return;
-      }
-
-      res.json({ updated: true });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        next(new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid payload"));
-        return;
-      }
       next(error);
     }
   },
@@ -984,11 +746,17 @@ router.get(
   },
 );
 
+/**
+ * Delegable. Branding is a marketing concern — a logo and two colours — and
+ * routing every change through the one super admin is why these edits queue up
+ * behind whoever holds that account. The grant is the control.
+ */
 router.put(
   "/api/v1/system/branding",
   systemWriteRateLimiter,
   authenticateJwt,
-  requireRole(["super_admin"]),
+  requireRole(["super_admin", "admin"]),
+  requireRbacPermission("/settings/branding", "edit"),
   async (req: AuthenticatedRequest, res, next) => {
     try {
       const payload = brandingSchema.parse(req.body ?? {});
@@ -1330,6 +1098,9 @@ function parseCsv(text: string): Record<string, string>[] {
   return rows;
 }
 
+// SUPER-ADMIN ONLY BY DESIGN: bulk insert into any module's collection,
+// bypassing that module's own validation and permission checks. There is no
+// undo and no per-row audit entry.
 router.post(
   "/api/v1/system/import/:module",
   systemWriteRateLimiter,

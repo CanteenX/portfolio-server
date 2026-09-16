@@ -9,6 +9,7 @@ import { AppError } from "../../core/errors/app-error";
 import { authenticateJwt } from "../../core/auth/auth.middleware";
 import { requireRole } from "../../core/rbac/role.middleware";
 import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+import { revalidateWebsite, PROJECT_PATHS } from "../../core/revalidate/revalidate.service";
 
 /** Both roles may reach these routes; what they may DO is decided per menu. */
 const ADMIN_ROLES: RoleKey[] = ["super_admin", "admin"];
@@ -31,8 +32,37 @@ function ensureValidObjectId(id: string): void {
   }
 }
 
-const featureSchema = z.object({ title: z.string(), description: z.string() });
-const gallerySchema = z.object({ src: z.string(), caption: z.string() });
+const featureSchema = z.object({
+  title: z.string(),
+  description: z.string(),
+  icon: z.string().max(60).default(""),
+  accent: z.string().max(40).default("")
+});
+const gallerySchema = z.object({
+  src: z.string(),
+  caption: z.string(),
+  label: z.string().max(120).default("")
+});
+const heroMetaSchema = z.object({
+  label: z.string().max(60).default(""),
+  value: z.string().max(200).default("")
+});
+const sectionHeadingSchema = z.object({
+  eyebrow: z.string().max(80).default(""),
+  title: z.string().max(200).default(""),
+  lead: z.string().max(600).default("")
+});
+const sectionHeadingsSchema = z
+  .object({
+    stack: sectionHeadingSchema.optional(),
+    roi: sectionHeadingSchema.optional(),
+    problem: sectionHeadingSchema.optional(),
+    solution: sectionHeadingSchema.optional(),
+    screens: sectionHeadingSchema.optional(),
+    features: sectionHeadingSchema.optional(),
+    workflow: sectionHeadingSchema.optional()
+  })
+  .default({});
 const codeSnippetSchema = z.object({ language: z.string(), label: z.string(), code: z.string() });
 const roiItemSchema = z.object({
   value: z.string().default(""),
@@ -62,6 +92,10 @@ const createProjectSchema = z.object({
   client: z.string().max(300).default(""),
   timeframe: z.string().max(200).default(""),
   role: z.string().max(300).default(""),
+  intro: z.string().max(2000).default(""),
+  heroMeta: z.array(heroMetaSchema).max(6).default([]),
+  sectionHeadings: sectionHeadingsSchema,
+  screenLabelPrefix: z.string().max(40).default(""),
   stack: z.array(z.string()).default([]),
   techStack: z.array(z.string()).default([]),
   liveUrl: z.string().url().max(2000).optional().or(z.literal("")),
@@ -182,6 +216,7 @@ router.post("/api/v1/portfolio/projects", writeRateLimiter, authenticateJwt, req
   try {
     const payload = createProjectSchema.parse(req.body ?? {});
     const created = await PortfolioProjectModel.create(payload);
+    revalidateWebsite([...PROJECT_PATHS, `/projects/${created.slug}`]);
     res.status(201).json(created.toObject());
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -209,6 +244,8 @@ router.patch("/api/v1/portfolio/projects/:id", writeRateLimiter, authenticateJwt
     const payload = updateProjectSchema.parse(req.body ?? {});
     const updated = await PortfolioProjectModel.findByIdAndUpdate(req.params.id, { $set: payload }, { new: true, runValidators: true }).lean().exec();
     if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Project not found");
+    const updatedSlug = (updated as unknown as { slug?: string }).slug;
+    revalidateWebsite(updatedSlug ? [...PROJECT_PATHS, `/projects/${updatedSlug}`] : PROJECT_PATHS);
     res.json(updated);
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -225,6 +262,7 @@ router.delete("/api/v1/portfolio/projects/:id", writeRateLimiter, authenticateJw
     const project = await PortfolioProjectModel.findById(req.params.id).exec();
     if (!project) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Project not found");
     await PortfolioProjectModel.deleteOne({ _id: project._id }).exec();
+    revalidateWebsite([...PROJECT_PATHS, `/projects/${project.slug}`]);
     res.status(204).send();
   } catch (error) {
     next(error);

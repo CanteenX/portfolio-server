@@ -1,5 +1,5 @@
 import type { FeatureFlags, ModuleKey } from "./modules.js";
-import type { MenuGroup, MenuPermissionEntry } from "./menu.js";
+import type { MenuGroup } from "./menu.js";
 import type { UIFeatureFlags } from "./ui-feature-flags.js";
 
 export const ROLE_KEYS = ["super_admin", "admin"] as const;
@@ -15,7 +15,6 @@ export type SessionBootstrapResponse = {
   features: FeatureFlags;
   uiFeatureFlags?: UIFeatureFlags;
   menuGroups?: MenuGroup[];
-  currentRolePermissions?: MenuPermissionEntry[];
   moduleCatalog: Array<{
     key: ModuleKey;
     label: string;

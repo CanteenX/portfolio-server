@@ -21,9 +21,21 @@ process.env.CORS_ORIGINS = "http://localhost:3000";
 process.env.TRUST_PROXY = "0";
 process.env.ENABLE_SEED = "false";
 
+/**
+ * Token subjects are real ObjectId strings, not "a-001".
+ *
+ * `loadRoleFor()` opens with `ObjectId.isValid(userId)` and returns null when
+ * it fails, so a token signed with a non-ObjectId `sub` resolves to "no role"
+ * regardless of what the database holds. Every deny assertion written against
+ * such a token passes whether or not the permission check works — the fixture
+ * denies it, not the code under test.
+ */
+const SUPER_ADMIN_ID = new mongoose.Types.ObjectId();
+const ADMIN_ID = new mongoose.Types.ObjectId();
+
 function superAdminToken(): string {
   return jwt.sign(
-    { sub: "sa-001", email: "superadmin@test.local", role: "super_admin" },
+    { sub: String(SUPER_ADMIN_ID), email: "superadmin@test.local", role: "super_admin" },
     JWT_SECRET_SUPER_ADMIN,
     { expiresIn: "1h" }
   );
@@ -31,7 +43,7 @@ function superAdminToken(): string {
 
 function adminToken(): string {
   return jwt.sign(
-    { sub: "a-001", email: "admin@test.local", role: "admin" },
+    { sub: String(ADMIN_ID), email: "admin@test.local", role: "admin" },
     JWT_SECRET_ADMIN,
     { expiresIn: "1h" }
   );
@@ -627,7 +639,13 @@ describe("integration: branding CRUD", () => {
     assert.equal(getRes.body.companyName, "Test Corp");
   });
 
-  it("admin can read branding but cannot write", async () => {
+  it("an admin without the branding grant can read but not write", async () => {
+    // A-8 made branding writable by grant rather than by base role, so this
+    // admin is refused for having no grant, not for being an admin. The
+    // distinction matters: the fixture has no employee row at all, which is
+    // the weakest possible form of "not granted". `rbac-api-guard.test.ts`
+    // covers the case that actually exercises the grant — an admin with a real
+    // role that happens to include branding.
     const readRes = await request(app)
       .get("/api/v1/system/branding")
       .set("Authorization", `Bearer ${adminToken()}`);
@@ -638,6 +656,11 @@ describe("integration: branding CRUD", () => {
       .set("Authorization", `Bearer ${adminToken()}`)
       .send({ companyName: "Hacked", logoUrl: "", primaryColor: "#000000" });
     assert.equal(writeRes.status, 403);
+
+    const after = await request(app)
+      .get("/api/v1/system/branding")
+      .set("Authorization", `Bearer ${superAdminToken()}`);
+    assert.notEqual(after.body.companyName, "Hacked");
   });
 
   it("rejects invalid hex color", async () => {
@@ -651,50 +674,26 @@ describe("integration: branding CRUD", () => {
 
 // ── Custom roles CRUD ─────────────────────────────────────────
 
-describe("integration: custom roles CRUD", () => {
-  let roleId: string;
-
-  it("creates a custom role", async () => {
-    const res = await request(app)
-      .post("/api/v1/system/custom-roles")
-      .set("Authorization", `Bearer ${superAdminToken()}`)
-      .send({ name: "Read-Only Viewer", permissions: ["crm.read", "tasks.read"] });
-    assert.equal(res.status, 201);
-    assert.equal(res.body.name, "Read-Only Viewer");
-    assert.deepEqual(res.body.permissions, ["crm.read", "tasks.read"]);
-    roleId = res.body.id;
-  });
-
-  it("lists custom roles", async () => {
-    const res = await request(app)
-      .get("/api/v1/system/custom-roles")
-      .set("Authorization", `Bearer ${superAdminToken()}`);
-    assert.equal(res.status, 200);
-    assert.ok(res.body.roles.length >= 1);
-  });
-
-  it("updates a custom role", async () => {
-    const res = await request(app)
-      .put(`/api/v1/system/custom-roles/${roleId}`)
-      .set("Authorization", `Bearer ${superAdminToken()}`)
-      .send({ name: "CRM Viewer", permissions: ["crm.read"] });
-    assert.equal(res.status, 200);
-    assert.equal(res.body.name, "CRM Viewer");
-  });
-
-  it("admin cannot manage custom roles", async () => {
-    const res = await request(app)
-      .get("/api/v1/system/custom-roles")
-      .set("Authorization", `Bearer ${adminToken()}`);
-    assert.equal(res.status, 403);
-  });
-
-  it("deletes a custom role", async () => {
-    const res = await request(app)
-      .delete(`/api/v1/system/custom-roles/${roleId}`)
-      .set("Authorization", `Bearer ${superAdminToken()}`);
-    assert.equal(res.status, 200);
-    assert.equal(res.body.deleted, true);
+describe("integration: custom roles are retired (A-6)", () => {
+  // The CRUD suite that was here is gone with the feature. Its replacement
+  // asserts the endpoints are actually absent: a retirement that leaves the
+  // routes registered is not a retirement, and CustomRole was worth removing
+  // precisely because it looked like access control without being any.
+  it("no longer exposes the custom-roles endpoints", async () => {
+    for (const [method, path] of [
+      ["get", "/api/v1/system/custom-roles"],
+      ["post", "/api/v1/system/custom-roles"],
+      ["put", "/api/v1/system/custom-roles/anything"],
+      ["delete", "/api/v1/system/custom-roles/anything"],
+      ["get", "/api/v1/system/custom-roles/anything/permissions"],
+      ["put", "/api/v1/system/users/anything/custom-role"]
+    ] as const) {
+      const res = await (request(app) as any)[method](path).set(
+        "Authorization",
+        `Bearer ${superAdminToken()}`
+      );
+      assert.equal(res.status, 404, `${method.toUpperCase()} ${path} is still routed`);
+    }
   });
 });
 

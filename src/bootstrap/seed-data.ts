@@ -1,5 +1,4 @@
 import { UserModel } from "../core/auth/user.model";
-import { CustomRoleModel } from "../core/rbac/custom-role.model";
 import { CrmContactModel, CrmPipelineModel, CrmDealModel } from "../modules/crm/crm.models";
 import { EcommerceProductModel, EcommerceOrderModel } from "../modules/ecommerce/ecommerce.models";
 import { CalendarEventModel } from "../modules/calendar/calendar.models";
@@ -34,42 +33,6 @@ export async function seedModuleData(): Promise<void> {
   // Re-use the two real users for legacy seed references
   const sarahId = adminId;
   const jamesId = adminId;
-
-  // Seed Custom Roles
-  if ((await CustomRoleModel.countDocuments()) === 0) {
-    await CustomRoleModel.create([
-      {
-        clientCode: env.CLIENT_CODE,
-        name: "Support Manager",
-        permissions: [
-          "support-tickets:read",
-          "support-tickets:create",
-          "support-tickets:update",
-          "tasks:read",
-          "tasks:create",
-          "tasks:update"
-        ],
-        structuredPermissions: [],
-        createdBy: "seed",
-        updatedBy: "seed"
-      },
-      {
-        clientCode: env.CLIENT_CODE,
-        name: "Sales Representative",
-        permissions: [
-          "crm:read",
-          "crm:create",
-          "crm:update",
-          "invoices:read",
-          "invoices:create"
-        ],
-        structuredPermissions: [],
-        createdBy: "seed",
-        updatedBy: "seed"
-      }
-    ]);
-    logger.info("Seeded custom roles");
-  }
 
   // Seed CRM Contacts
   if ((await CrmContactModel.countDocuments()) === 0) {
@@ -1395,14 +1358,6 @@ export async function seedModuleData(): Promise<void> {
         userEmail: "superadmin@admin.local",
         after: { name: "Platform v2.0 Launch", status: "active" },
         createdAt: new Date(Date.now() - 25 * 24 * 60 * 60 * 1000)
-      },
-      {
-        action: "create",
-        entity: "CustomRole",
-        userId: superadminId,
-        userEmail: "superadmin@admin.local",
-        after: { name: "Support Manager", permissions: ["support-tickets:read", "support-tickets:create"] },
-        createdAt: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000)
       },
       {
         action: "update",

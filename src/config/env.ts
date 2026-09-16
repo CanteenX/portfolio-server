@@ -15,6 +15,30 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000,http://localhost:3001,http://localhost:4000"),
   TRUST_PROXY: z.string().default("0"),
   ENABLE_SEED: z.enum(["true", "false"]).default("false"),
+  /**
+   * Kill switch for menu-driven RBAC on the 14 legacy modules.
+   *
+   *   off     — legacy behaviour, no RBAC evaluation (the default: a deploy
+   *             that forgets this variable must not start denying traffic)
+   *   shadow  — evaluate and log `rbac.shadow_deny`, but always allow
+   *   enforce — deny on failure
+   *
+   * Rollback is therefore an env change, not a git revert, which matters when
+   * the blast radius is every module route at once.
+   */
+  RBAC_MODULE_MODE: z.enum(["off", "shadow", "enforce"]).default("off"),
+  /**
+   * Whether the seed may grant an access-less admin the Administrator role.
+   *
+   * On until every admin has a deliberate role. After that it is a liability:
+   * the backfill cannot tell "never configured" from "access removed on
+   * purpose", so leaving it on means any account reduced to zero grants is
+   * restored on the next cold start. Turn it off once the migration is done.
+   */
+  RBAC_BACKFILL_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
   API_KEY_HASH_SALT: z.string().min(16).default("replace_api_key_hash_salt"),
   PAYMENT_DEFAULT_SUCCESS_URL: z.string().url().default("http://localhost:5173/payment/success"),
   PAYMENT_DEFAULT_CANCEL_URL: z.string().url().default("http://localhost:5173/payment/cancel"),
@@ -56,6 +80,16 @@ const envSchema = z.object({
   SMTP_FROM: z.string().optional(),
   /** Where new-lead notifications go. Without it, nothing is notified. */
   LEAD_NOTIFY_TO: z.string().optional(),
+
+  /**
+   * On-demand ISR revalidation for the public website.
+   *
+   * Both must be set for it to run; either alone is a no-op rather than an
+   * error, because a missing revalidation degrades to the existing hourly
+   * refresh and must not stop the API booting.
+   */
+  WEBSITE_REVALIDATE_URL: z.string().url().optional(),
+  REVALIDATE_SECRET: z.string().min(16).optional(),
 
   // WhatsApp Meta API Configuration
   WHATSAPP_ACCESS_TOKEN: z.string().min(1).optional(),

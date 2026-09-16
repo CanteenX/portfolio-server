@@ -12,6 +12,19 @@ export type EmployeeDocument = {
   parentEmployeeId: mongoose.Types.ObjectId | null;
   ancestorIds: mongoose.Types.ObjectId[];
   isActive: boolean;
+  /**
+   * "Leave this employee's access alone."
+   *
+   * The seed promotes any admin holding no effective grants to the
+   * Administrator role, because before enforcement existed nobody had a reason
+   * to populate a role and the alternative is locking out the owner on deploy.
+   * That rule cannot distinguish "never configured" from "deliberately stripped
+   * of access", so without this flag, revoking someone's grants lasts only
+   * until the next cold start — and the boot log is the only trace.
+   *
+   * Set on deactivation and by anyone intentionally reducing access.
+   */
+  accessLocked: boolean;
   createdBy: string | null;
   updatedBy: string;
 };
@@ -28,6 +41,7 @@ const employeeSchema = new Schema<EmployeeDocument>(
     parentEmployeeId: { type: Schema.Types.ObjectId, ref: "Employee", default: null },
     ancestorIds: { type: [Schema.Types.ObjectId], default: [] },
     isActive: { type: Boolean, required: true, default: true },
+    accessLocked: { type: Boolean, required: true, default: false },
     createdBy: { type: String, default: null },
     updatedBy: { type: String, required: true },
   },

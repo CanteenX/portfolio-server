@@ -46,7 +46,26 @@ type MenuSeed = {
   children?: { menuUrl: string; menuName: string; icon: string; sequence: number }[];
 };
 
-const MENU_TREE: MenuSeed[] = [
+/**
+ * Exported so the A-4 enforcement suite can assert that every module in
+ * MODULE_MENU_URL actually has a row here. A mapped module absent from this
+ * tree is a guaranteed 403 for the whole module the moment enforcement is on.
+ */
+/**
+ * Menus that exist but are granted to nobody.
+ *
+ * `requireRbacPermission` bypasses only for super_admin, so a menu no role
+ * holds a grant on is super-admin-only — that is the mechanism, not a side
+ * effect. Listing a URL here keeps the backfill from handing it out, which is
+ * the only reason a delegable menu becomes non-delegable.
+ *
+ * Legal documents are here because a published privacy policy is a statement
+ * the business is bound by. Editing one is an owner decision, not something to
+ * delegate along with the rest of the CMS.
+ */
+export const SUPER_ADMIN_ONLY_MENUS = new Set<string>(["/portfolio/legal"]);
+
+export const MENU_TREE: MenuSeed[] = [
   {
     menuUrl: "#portfolio",
     menuName: "Portfolio CMS",
@@ -57,6 +76,15 @@ const MENU_TREE: MenuSeed[] = [
       { menuUrl: "/portfolio/team", menuName: "Team", icon: "Users", sequence: 2 },
       { menuUrl: "/portfolio/contacts", menuName: "Contacts", icon: "Mail", sequence: 3 },
       { menuUrl: "/portfolio/settings", menuName: "Site Settings", icon: "Settings", sequence: 4 },
+      // Must exist before requireRbacPermission("/portfolio/services", …) can
+      // ever pass: the guard resolves menus by URL, so an unseeded screen 403s
+      // for every non-super-admin regardless of what their role grants.
+      { menuUrl: "/portfolio/services", menuName: "Services", icon: "Layers", sequence: 7 },
+      { menuUrl: "/portfolio/social-proof", menuName: "Social Proof", icon: "Star", sequence: 8 },
+      // Seeded but never granted — see SUPER_ADMIN_ONLY_MENUS below.
+      { menuUrl: "/portfolio/legal", menuName: "Legal Documents", icon: "Scale", sequence: 9 },
+      { menuUrl: "/portfolio/faq", menuName: "FAQ", icon: "HelpCircle", sequence: 10 },
+      { menuUrl: "/portfolio/posts", menuName: "Insights", icon: "PenLine", sequence: 11 },
       {
         menuUrl: "/portfolio/projects/masters",
         menuName: "Project Masters",
@@ -98,7 +126,11 @@ const MENU_TREE: MenuSeed[] = [
       { menuUrl: "/crm", menuName: "CRM", icon: "Users", sequence: 10 },
       { menuUrl: "/ecommerce", menuName: "Ecommerce", icon: "ShoppingCart", sequence: 11 },
       { menuUrl: "/job", menuName: "Jobs", icon: "Briefcase", sequence: 12 },
-      { menuUrl: "/api-management", menuName: "API Management", icon: "KeyRound", sequence: 13 }
+      { menuUrl: "/api-management", menuName: "API Management", icon: "KeyRound", sequence: 13 },
+      // The fourteenth module. Its absence here is what would have made
+      // RBAC_MODULE_MODE=enforce a guaranteed 403 on every WhatsApp route:
+      // no menu row means no grant is expressible, for anyone.
+      { menuUrl: "/whatsapp", menuName: "WhatsApp", icon: "MessageSquare", sequence: 14 }
     ]
   },
   {
@@ -110,7 +142,6 @@ const MENU_TREE: MenuSeed[] = [
       { menuUrl: "/settings/system", menuName: "System", icon: "Settings", sequence: 1 },
       { menuUrl: "/settings/branding", menuName: "Branding", icon: "FileEdit", sequence: 2 },
       { menuUrl: "/settings/users", menuName: "Users", icon: "Users", sequence: 3 },
-      { menuUrl: "/settings/custom-roles", menuName: "Custom Roles", icon: "KeyRound", sequence: 4 },
       { menuUrl: "/settings/payments", menuName: "Payments", icon: "ShoppingCart", sequence: 5 },
       { menuUrl: "/settings/audit-log", menuName: "Audit Log", icon: "FileText", sequence: 6 },
       {
@@ -206,6 +237,44 @@ async function upsertMenu(
  * Only runs for admins with NO employee record. An admin already mapped to a
  * deliberately-narrow role is never widened.
  */
+/**
+ * Records a seed-time grant of access.
+ *
+ * `logger.warn` was the only trace, and on Vercel stdout survives about as long
+ * as the invocation — so "who gave this account full access?" had no answer
+ * after the fact. A promotion is a privilege change and belongs in the same
+ * audit trail as every other one.
+ */
+async function auditPromotion(options: {
+  employeeId: string;
+  email: string;
+  before: mongoose.Types.ObjectId | null;
+  after: mongoose.Types.ObjectId;
+  reason: string;
+}): Promise<void> {
+  logger.warn("Admin had no effective permissions — moved to the Administrator role", {
+    email: options.email,
+    reason: options.reason
+  });
+
+  try {
+    const { auditLogService } = await import("../core/audit/audit-log.service");
+    await auditLogService.log({
+      action: "rbac.employee.seed_promoted",
+      entity: "Employee",
+      entityId: options.employeeId,
+      userId: "seed",
+      userEmail: options.email,
+      before: { roleId: options.before ? String(options.before) : null },
+      after: { roleId: String(options.after), reason: options.reason }
+    });
+  } catch (error) {
+    // Never fail boot over the audit write. A server that will not start is a
+    // worse outcome than a promotion recorded only in the log line above.
+    logger.error("Failed to audit a seed promotion", { error: String(error) });
+  }
+}
+
 async function backfillAdminEmployees(menuIds: mongoose.Types.ObjectId[]): Promise<number> {
   const actions = (await ActionTypeModel.find({ clientCode: env.CLIENT_CODE, isActive: true })
     .select("_id")
@@ -226,9 +295,14 @@ async function backfillAdminEmployees(menuIds: mongoose.Types.ObjectId[]): Promi
     clientCode: env.CLIENT_CODE,
     roleName: ADMIN_ROLE_NAME
   })
-    .select("_id")
+    .select("_id permissions")
     .lean()
-    .exec()) as { _id: mongoose.Types.ObjectId } | null;
+    .exec()) as
+    | {
+        _id: mongoose.Types.ObjectId;
+        permissions?: { menuId: string; actionTypeId: string; granted: boolean }[];
+      }
+    | null;
 
   if (!role) {
     const created = await RoleMasterModel.create({
@@ -241,12 +315,28 @@ async function backfillAdminEmployees(menuIds: mongoose.Types.ObjectId[]): Promi
     });
     role = { _id: created._id };
   } else {
-    // Keep the role current as new menus appear, but only ADD grants — never
-    // revoke, because an owner may have deliberately unticked something.
-    await RoleMasterModel.updateOne(
-      { _id: role._id },
-      { $addToSet: { permissions: { $each: permissions } } }
-    ).exec();
+    // Grant the pairs this role has never been asked about — newly seeded menus
+    // — and nothing else.
+    //
+    // Keyed on menuId+actionTypeId WITHOUT `granted`, which is the whole point.
+    // `$addToSet` of the full matrix compares entire subdocuments, so an
+    // unticked box (granted:false) does not match the granted:true version and
+    // gets inserted alongside it. The role then holds both, `some(granted &&
+    // match)` finds the true one, and the untick is undone on the next cold
+    // start — while the comment above the operation claimed it never revoked
+    // anything. It did not revoke; it re-granted, which for the owner who
+    // removed the permission is the same betrayal in the opposite direction.
+    const known = new Set(
+      (role.permissions ?? []).map((p) => `${String(p.menuId)}:${String(p.actionTypeId)}`)
+    );
+    const additions = permissions.filter((p) => !known.has(`${p.menuId}:${p.actionTypeId}`));
+
+    if (additions.length > 0) {
+      await RoleMasterModel.updateOne(
+        { _id: role._id },
+        { $push: { permissions: { $each: additions } } }
+      ).exec();
+    }
   }
 
   const admins = (await UserModel.find({ role: "admin" })
@@ -263,12 +353,26 @@ async function backfillAdminEmployees(menuIds: mongoose.Types.ObjectId[]): Promi
     const existing = await EmployeeModel.findOne({
       $or: [{ userId: admin._id }, { emailOffice: admin.email }]
     })
-      .select("_id roleId")
+      .select("_id roleId accessLocked")
       .lean()
       .exec();
 
     if (existing) {
-      const typed = existing as { _id: mongoose.Types.ObjectId; roleId?: mongoose.Types.ObjectId | null };
+      const typed = existing as {
+        _id: mongoose.Types.ObjectId;
+        roleId?: mongoose.Types.ObjectId | null;
+        accessLocked?: boolean;
+      };
+
+      // Somebody took this admin's access away on purpose. Promoting them would
+      // hand it straight back on the next cold start, which is how a revocation
+      // silently expires.
+      if (typed.accessLocked) {
+        logger.info("Skipped zero-grant promotion — employee is access-locked", {
+          email: admin.email
+        });
+        continue;
+      }
 
       // No role at all, or a role that grants literally nothing. Both mean the
       // same thing now that enforcement exists: this admin can reach no screen.
@@ -288,8 +392,12 @@ async function backfillAdminEmployees(menuIds: mongoose.Types.ObjectId[]): Promi
 
       if (currentGrants === 0) {
         await EmployeeModel.updateOne({ _id: typed._id }, { $set: { roleId: role._id } }).exec();
-        logger.warn("Admin had no effective permissions — moved to the Administrator role", {
-          email: admin.email
+        await auditPromotion({
+          employeeId: String(typed._id),
+          email: admin.email,
+          before: typed.roleId ?? null,
+          after: role._id,
+          reason: "zero effective grants"
         });
         created += 1;
       }
@@ -342,12 +450,16 @@ export async function seedRbacBaseline(): Promise<void> {
       clientCode: env.CLIENT_CODE,
       menuUrl: { $in: children.map((c) => c.menuUrl) }
     })
-      .select("_id")
+      .select("_id menuUrl")
       .lean()
-      .exec()) as { _id: mongoose.Types.ObjectId }[];
+      .exec()) as unknown as { _id: mongoose.Types.ObjectId; menuUrl: string }[];
 
     if (children.length > 0 && existingChildren.length === children.length) {
-      grantableMenuIds.push(...existingChildren.map((c) => c._id));
+      grantableMenuIds.push(
+        ...existingChildren
+          .filter((c) => !SUPER_ADMIN_ONLY_MENUS.has(c.menuUrl))
+          .map((c) => c._id)
+      );
       continue;
     }
 
@@ -372,8 +484,12 @@ export async function seedRbacBaseline(): Promise<void> {
       });
       if (childResult.created) menusCreated += 1;
       // Only leaf menus are grantable — a root row is a sidebar heading, not a
-      // page, so granting actions on it would mean nothing.
-      grantableMenuIds.push(childResult.id);
+      // page, so granting actions on it would mean nothing. Menus reserved to
+      // the owner are seeded so the guard can resolve them, but never handed to
+      // a role.
+      if (!SUPER_ADMIN_ONLY_MENUS.has(child.menuUrl)) {
+        grantableMenuIds.push(childResult.id);
+      }
     }
   }
 
@@ -403,7 +519,13 @@ export async function seedRbacBaseline(): Promise<void> {
     logger.info("Removed empty placeholder menu sections", { removed });
   }
 
-  const employeesCreated = await backfillAdminEmployees(grantableMenuIds);
+  const employeesCreated = env.RBAC_BACKFILL_ENABLED
+    ? await backfillAdminEmployees(grantableMenuIds)
+    : 0;
+
+  if (!env.RBAC_BACKFILL_ENABLED) {
+    logger.info("RBAC admin backfill is disabled — no employee rows or roles were granted");
+  }
 
   if (actionsCreated > 0 || menusCreated > 0) {
     // New rows mean the negative lookups cached during the gap are now wrong.

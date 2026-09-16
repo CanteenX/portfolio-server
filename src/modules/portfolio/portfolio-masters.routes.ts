@@ -31,6 +31,11 @@ const IMAGE_UPLOAD_MENUS = [
   "/portfolio/team",
   "/portfolio/settings",
   "/portfolio/masters/tech-stacks",
+  // Client logos and testimonial avatars come through this same endpoint; a
+  // screen missing from this list gets working CRUD and a 403 on every upload.
+  "/portfolio/social-proof",
+  // Post cover images.
+  "/portfolio/posts",
   // OG share images are uploaded from the SEO Manager through this same endpoint.
   "/website/seo-manager"
 ];
@@ -142,6 +147,14 @@ const techStackWriteSchema = z.object({
   name: z.string().min(1).max(100).trim(),
   image: z.string().max(2000).default(""),
   description: z.string().max(500).default(""),
+  icon: z.string().max(60).default(""),
+  // Hex only. The value is interpolated into an inline `color` style on the
+  // website, so anything accepted here is CSS that arrives from the database.
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, "Colour must be a hex value such as #61DAFB")
+    .or(z.literal(""))
+    .default(""),
   isActive: z.boolean().default(true),
   order: z.number().int().default(0)
 });

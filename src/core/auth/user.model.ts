@@ -5,7 +5,6 @@ export type UserDocument = {
   email: string;
   passwordHash: string;
   role: RoleKey;
-  customRoleId?: string;
 };
 
 const userSchema = new Schema<UserDocument>(
@@ -13,7 +12,6 @@ const userSchema = new Schema<UserDocument>(
     email: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true },
     role: { type: String, enum: ["super_admin", "admin"], required: true },
-    customRoleId: { type: String, default: undefined },
   },
   { timestamps: true }
 );

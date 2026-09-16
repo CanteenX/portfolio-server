@@ -235,7 +235,7 @@ src/
 ├── config/                 # Environment validation (Zod), DB connection
 ├── core/
 │   ├── auth/               # User model, JWT sign/verify, auth middleware
-│   ├── rbac/               # Roles, permissions, custom roles, permission middleware
+│   ├── rbac/               # Roles, grants, permission middleware
 │   ├── audit/              # Audit log model and service
 │   ├── feature-flags/      # Module feature config + UI feature flags
 │   ├── payments/           # Stripe, PayPal, Razorpay adapters
@@ -307,27 +307,46 @@ Modules can be individually enabled/disabled via feature config (Settings > Feat
 | Role          | Access Level                                              |
 |---------------|-----------------------------------------------------------|
 | `super_admin` | Full access - all modules, all settings, user management  |
-| `admin`       | Access controlled by assigned custom role permissions      |
+| `admin`       | Access controlled by the grants on their assigned role     |
 
-### Custom Roles
+### Roles
 
-Super admins can create custom roles and assign them to admin users. Each custom role has a granular permission matrix defining exactly which actions each user can perform on each menu item.
+Super admins create roles under Access Control and assign them to admin users.
+A role is a set of grants — a menu plus an action — and an admin may only
+assign a role whose grants are a subset of their own, never to themselves.
+This keeps role assignment from becoming a privilege-escalation path.
 
 ---
 
 ## Permission System
 
-5 actions per menu item, controlled via the Permission Matrix:
+6 actions per menu item:
 
-| Action   | Description            |
-|----------|------------------------|
-| `read`   | View the page/data     |
-| `create` | Create new records     |
-| `update` | Edit existing records  |
-| `delete` | Remove records         |
-| `export` | Export data (CSV, etc.)|
+| Action   | Description             |
+|----------|-------------------------|
+| `read`   | View the page/data      |
+| `write`  | Create new records      |
+| `edit`   | Edit existing records   |
+| `delete` | Remove records          |
+| `print`  | Export data (CSV, etc.) |
+| `mail`   | Send mail from a screen |
 
-The backend enforces permissions via `requirePermission` middleware on every route. A request to `POST /api/v1/crm/contacts` checks that the user has `crm.create` permission.
+The backend enforces these via `requireRbacPermission(menuUrl, action)` on
+every route: `POST /api/v1/crm/contacts` checks a `write` grant on the CRM
+menu. Grants are cached for `LOOKUP_TTL_MS`, so a newly seeded menu or a fresh
+grant can take up to a minute to take effect.
+
+`RBAC_MODULE_MODE` controls module-route enforcement — `off` (**the default**),
+`shadow` to log what would be denied without denying it, and `enforce`. Shadow
+denials are written to the audit log as `rbac.shadow_deny`; `pnpm rbac:soak`
+reports the count over a window.
+
+The default is `off` deliberately: enforcement is staged behind a soak, so
+deploying this code does **not** on its own close the legacy-module bypass. Until
+`RBAC_MODULE_MODE=enforce` is set in the deployment environment, every `admin`
+retains full CRUD on all 14 legacy modules via the static permission table in
+`src/core/rbac/permissions.ts`, exactly as before. Setting the variable is the
+step that makes the fix live, and it should follow a clean `pnpm rbac:soak`.
 
 ---
 
@@ -370,8 +389,8 @@ Base URL: `http://localhost:7002/api/v1`
 | GET/PUT | `/system/feature-config`              | Enable/disable modules             |
 | GET/PUT | `/system/ui-feature-flags`            | UI feature toggles                 |
 | GET     | `/system/audit-log`                   | Audit trail                        |
-| CRUD    | `/system/custom-roles`                | Manage custom roles                |
-| GET/PUT | `/system/custom-roles/:id/permissions`| Permission matrix per role         |
+| CRUD    | `/rbac/roles`                         | Manage roles and their grants      |
+| CRUD    | `/rbac/employees`                     | Employees and role assignment      |
 
 ### Module Endpoints (standard REST pattern)
 

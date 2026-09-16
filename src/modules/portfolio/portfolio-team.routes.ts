@@ -19,6 +19,8 @@ const router = Router();
 const writeRateLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
 const readRateLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false });
 
+import { revalidateWebsite, TEAM_PATHS } from "../../core/revalidate/revalidate.service";
+
 const slugParamSchema = z.string().min(1).max(200).regex(/^[a-z0-9-]+$/);
 
 function ensureValidObjectId(id: string): void {
@@ -40,7 +42,14 @@ const socialsSchema = z.object({
 });
 
 const createMemberSchema = z.object({
-  id: z.string().min(1).max(50).trim(),
+  /**
+   * Optional, because the admin form has no input for it and never sent one —
+   * so every create from the panel failed validation with a bare 400 and no
+   * indication of which field was missing. It stays in the schema for the seed
+   * and for API clients that do supply a display ref; when absent the route
+   * derives one below.
+   */
+  id: z.string().min(1).max(50).trim().optional(),
   slug: z.string().min(1).max(200).trim().toLowerCase(),
   name: z.string().min(1).max(200).trim(),
   role: z.string().min(1).max(200).trim(),
@@ -122,7 +131,16 @@ router.get("/api/v1/portfolio/team", authenticateJwt, requireRole(ADMIN_ROLES), 
 router.post("/api/v1/portfolio/team", writeRateLimiter, authenticateJwt, requireRole(ADMIN_ROLES), requireRbacPermission("/portfolio/team", "write"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const payload = createMemberSchema.parse(req.body ?? {});
-    const created = await PortfolioMemberModel.create(payload);
+
+    // `id` is a human-facing display ref, unique but otherwise arbitrary. The
+    // slug is already unique and already required, so reusing it keeps the
+    // constraint satisfied without inventing a counter that two concurrent
+    // creates could collide on.
+    const created = await PortfolioMemberModel.create({
+      ...payload,
+      id: payload.id ?? payload.slug
+    });
+    revalidateWebsite(TEAM_PATHS);
     res.status(201).json(created.toObject());
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -150,6 +168,7 @@ router.patch("/api/v1/portfolio/team/:id", writeRateLimiter, authenticateJwt, re
     const payload = updateMemberSchema.parse(req.body ?? {});
     const updated = await PortfolioMemberModel.findByIdAndUpdate(req.params.id, { $set: payload }, { new: true, runValidators: true }).lean().exec();
     if (!updated) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Team member not found");
+    revalidateWebsite(TEAM_PATHS);
     res.json(updated);
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -166,6 +185,7 @@ router.delete("/api/v1/portfolio/team/:id", writeRateLimiter, authenticateJwt, r
     const member = await PortfolioMemberModel.findById(req.params.id).exec();
     if (!member) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Team member not found");
     await PortfolioMemberModel.deleteOne({ _id: member._id }).exec();
+    revalidateWebsite(TEAM_PATHS);
     res.status(204).send();
   } catch (error) {
     next(error);

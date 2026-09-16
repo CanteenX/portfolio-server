@@ -7,6 +7,9 @@ import { authenticateJwt } from "../../core/auth/auth.middleware";
 import type { AuthenticatedRequest } from "../../core/auth/auth.types";
 import { AppError } from "../../core/errors/app-error";
 import { requireRole } from "../../core/rbac/role.middleware";
+import type { ActionCode } from "../../core/rbac/rbac-permission.middleware";
+import { requireRbacPermission } from "../../core/rbac/rbac-permission.middleware";
+import { auditLogService } from "../../core/audit/audit-log.service";
 import { env } from "../../config/env";
 import { UserModel } from "../../core/auth/user.model";
 import type { MenuMasterDocument } from "./menu-master.model";
@@ -19,8 +22,32 @@ import { EmployeeModel } from "./employee.model";
 import { RbacTaskModel } from "./rbac-task.model";
 
 const router = Router();
-const AUTH = [authenticateJwt, requireRole(["super_admin", "admin"])];
 const SUPER_ONLY = [authenticateJwt, requireRole(["super_admin"])];
+
+/**
+ * The RBAC screens are screens like any other, so they are granted like any
+ * other — by a row in MenuMaster, not by being an admin.
+ *
+ * Until now `/api/v1/rbac/*` was guarded by role alone, which meant every admin
+ * could read and write the access-control tables regardless of what their role
+ * actually granted. The menu URLs below must match the React route paths
+ * exactly: `useRbacPagePermissions` resolves a screen's grants by
+ * longest-prefix match on `location.pathname`, so a mismatch hides every button
+ * on a screen the server would have allowed.
+ */
+const RBAC_MENUS = "/rbac/menus";
+const RBAC_ACTIONS = "/rbac/actions";
+const RBAC_ROLES = "/rbac/roles";
+const RBAC_EMPLOYEES = "/rbac/employees";
+const RBAC_TASKS = "/rbac/tasks";
+
+function guard(menuUrl: string, action: ActionCode) {
+  return [
+    authenticateJwt,
+    requireRole(["super_admin", "admin"]),
+    requireRbacPermission(menuUrl, action),
+  ];
+}
 
 type LeanEmployee = EmployeeDocument & { _id: mongoose.Types.ObjectId };
 type LeanRole = RoleMasterDocument & { _id: mongoose.Types.ObjectId };
@@ -47,31 +74,135 @@ async function getDescendantIds(employeeId: mongoose.Types.ObjectId): Promise<mo
   return descendants.map((d) => d._id);
 }
 
-async function validateStrictSubset(
-  actorEmployeeId: string,
-  newPermissions: Array<{ menuId: string; actionTypeId: string; granted: boolean }>
-): Promise<void> {
+/**
+ * The actor's own ceiling, as a set of `menuId:actionTypeId` keys.
+ *
+ * Split out of the old `validateStrictSubset` because two different questions
+ * need it: "may they save these permissions" and "may they hand out this
+ * role". Both reduce to a containment test against this set.
+ */
+async function loadActorGrantSet(actorEmployeeId: string): Promise<Set<string>> {
   const actor = await EmployeeModel.findById(actorEmployeeId).lean().exec() as unknown as LeanEmployee | null;
   if (!actor?.roleId) {
-    throw new AppError(403, ERROR_CODES.FORBIDDEN, "You have no role assigned, cannot create/update roles.");
+    throw new AppError(
+      403,
+      ERROR_CODES.FORBIDDEN,
+      "You have no role assigned — ask a super admin to assign one before managing roles or employees."
+    );
   }
   const actorRole = await RoleMasterModel.findById(actor.roleId).lean().exec() as unknown as LeanRole | null;
   if (!actorRole) {
-    throw new AppError(403, ERROR_CODES.FORBIDDEN, "Your assigned role could not be found.");
+    throw new AppError(
+      403,
+      ERROR_CODES.FORBIDDEN,
+      "Your assigned role no longer exists — ask a super admin to reassign one."
+    );
   }
-  const actorGranted = new Set<string>(
+  return new Set<string>(
     actorRole.permissions
       .filter((p) => p.granted)
       .map((p) => `${p.menuId}:${p.actionTypeId}`)
   );
+}
+
+/**
+ * Exported for the containment unit tests. The HTTP suites cover the same rule
+ * end-to-end, but they can only reach it through a role that some fixture had
+ * to construct — which makes "equal sets are allowed" awkward to state and easy
+ * to get subtly wrong in the fixture rather than in the code.
+ */
+export function assertPermissionsWithinCeiling(
+  actorGrants: Set<string>,
+  newPermissions: Array<{ menuId: string; actionTypeId: string; granted: boolean }>
+): void {
   for (const perm of newPermissions) {
-    if (perm.granted && !actorGranted.has(`${perm.menuId}:${perm.actionTypeId}`)) {
+    if (perm.granted && !actorGrants.has(`${perm.menuId}:${perm.actionTypeId}`)) {
       throw new AppError(
         403,
         ERROR_CODES.FORBIDDEN,
         "Cannot save role: contains permissions exceeding your current access level."
       );
     }
+  }
+}
+
+async function validateStrictSubset(
+  actorEmployeeId: string,
+  newPermissions: Array<{ menuId: string; actionTypeId: string; granted: boolean }>
+): Promise<void> {
+  assertPermissionsWithinCeiling(await loadActorGrantSet(actorEmployeeId), newPermissions);
+}
+
+/**
+ * May this actor hand out this role?
+ *
+ * Grant-containment: yes if every permission the role grants is one the actor
+ * already holds. Authorship is deliberately NOT consulted.
+ *
+ * The check this replaces asked whether the role was created inside the actor's
+ * subtree, and skipped the test entirely when `createdBy` was null. Every
+ * seeded role — "Administrator" above all — has `createdBy: null`, so the guard
+ * never fired and any admin could assign themselves everything.
+ *
+ * Tightening authorship instead would have been worse than the hole: it makes
+ * `Administrator` permanently unassignable and leaves the owner unable to
+ * onboard anybody. Containment keeps every assignment that works today working,
+ * because an actor holding Administrator contains every other role by
+ * definition; only exceeding your own ceiling becomes impossible.
+ */
+async function assertRoleAssignable(actorEmployeeId: string, roleId: string): Promise<void> {
+  if (!mongoose.Types.ObjectId.isValid(roleId)) {
+    throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Invalid role id.");
+  }
+
+  // isActive matters: loadRoleFor() requires it when grants are actually
+  // evaluated, so assigning a soft-deleted role leaves the assignee with no
+  // effective access at all. That fails closed rather than open, but it looks
+  // to the admin like a successful assignment — so refuse it here instead of
+  // letting someone discover it as a mystery lockout.
+  const role = await RoleMasterModel.findOne({
+    _id: roleId,
+    clientCode: env.CLIENT_CODE,
+    isActive: true,
+  }).lean().exec() as unknown as LeanRole | null;
+  if (!role) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Role not found or inactive.");
+
+  const actorGrants = await loadActorGrantSet(actorEmployeeId);
+  const exceeding = (role.permissions ?? []).filter(
+    (p) => p.granted && !actorGrants.has(`${p.menuId}:${p.actionTypeId}`)
+  );
+
+  if (exceeding.length > 0) {
+    throw new AppError(
+      403,
+      ERROR_CODES.FORBIDDEN,
+      `Cannot assign "${role.roleName}": it grants ${exceeding.length} permission(s) beyond your own access level.`
+    );
+  }
+}
+
+/** Records who changed whose role, and to what. `logger.warn` is ephemeral on Vercel. */
+async function auditRoleAssignment(options: {
+  actorUserId: string;
+  actorEmail?: string;
+  employeeId: string;
+  before: mongoose.Types.ObjectId | string | null;
+  after: mongoose.Types.ObjectId | string | null;
+}): Promise<void> {
+  try {
+    await auditLogService.log({
+      action: "rbac.employee.role_assigned",
+      entity: "Employee",
+      entityId: options.employeeId,
+      userId: options.actorUserId,
+      userEmail: options.actorEmail,
+      before: { roleId: options.before ? String(options.before) : null },
+      after: { roleId: options.after ? String(options.after) : null },
+    });
+  } catch {
+    // An audit write that fails must not roll back a change the caller was
+    // authorised to make; the alternative is a permissions system that breaks
+    // when the log collection does.
   }
 }
 
@@ -87,7 +218,7 @@ const menuMasterSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
-router.get("/api/v1/rbac/menus", ...AUTH, async (req, res, next) => {
+router.get("/api/v1/rbac/menus", ...guard(RBAC_MENUS, "read"), async (req, res, next) => {
   try {
     const search = (req.query.search as string | undefined)?.trim();
     const filter: Record<string, unknown> = { clientCode: env.CLIENT_CODE };
@@ -183,7 +314,7 @@ const actionTypeSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
-router.get("/api/v1/rbac/actions", ...AUTH, async (req, res, next) => {
+router.get("/api/v1/rbac/actions", ...guard(RBAC_ACTIONS, "read"), async (req, res, next) => {
   try {
     const search = (req.query.search as string | undefined)?.trim();
     const filter: Record<string, unknown> = { clientCode: env.CLIENT_CODE };
@@ -249,7 +380,7 @@ const roleMasterCreateSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
-router.get("/api/v1/rbac/roles", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/rbac/roles", ...guard(RBAC_ROLES, "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const search = (req.query.search as string | undefined)?.trim();
     const searchFilter = search
@@ -286,7 +417,7 @@ router.get("/api/v1/rbac/roles", ...AUTH, async (req: AuthenticatedRequest, res,
   }
 });
 
-router.post("/api/v1/rbac/roles", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.post("/api/v1/rbac/roles", ...guard(RBAC_ROLES, "write"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = roleMasterCreateSchema.parse(req.body);
     const isSuperAdmin = req.user!.role === "super_admin";
@@ -311,7 +442,7 @@ router.post("/api/v1/rbac/roles", ...AUTH, async (req: AuthenticatedRequest, res
   }
 });
 
-router.put("/api/v1/rbac/roles/:id", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.put("/api/v1/rbac/roles/:id", ...guard(RBAC_ROLES, "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = roleMasterCreateSchema.partial().parse(req.body);
     const isSuperAdmin = req.user!.role === "super_admin";
@@ -325,6 +456,17 @@ router.put("/api/v1/rbac/roles/:id", ...AUTH, async (req: AuthenticatedRequest, 
     if (!isSuperAdmin) {
       const employee = await getEmployeeForUser(req.user!.id);
       if (!employee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
+
+      // Editing your own role is self-escalation wearing a different hat: the
+      // subset check compares the payload against the very role being rewritten,
+      // so each save ratchets the ceiling it is measured against.
+      if (employee.roleId && String(employee.roleId) === existing._id.toString()) {
+        throw new AppError(
+          403,
+          ERROR_CODES.FORBIDDEN,
+          "You cannot edit the role you are assigned to. Ask a super admin."
+        );
+      }
 
       const descendantIds = await getDescendantIds(employee._id);
       const visibleCreators = [
@@ -350,7 +492,7 @@ router.put("/api/v1/rbac/roles/:id", ...AUTH, async (req: AuthenticatedRequest, 
   }
 });
 
-router.delete("/api/v1/rbac/roles/:id", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.delete("/api/v1/rbac/roles/:id", ...guard(RBAC_ROLES, "delete"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const isSuperAdmin = req.user!.role === "super_admin";
     const existing = await RoleMasterModel.findOne({
@@ -390,7 +532,7 @@ router.delete("/api/v1/rbac/roles/:id", ...AUTH, async (req: AuthenticatedReques
   }
 });
 
-router.get("/api/v1/rbac/roles/:id/impact", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/rbac/roles/:id/impact", ...guard(RBAC_ROLES, "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const roleId = req.params.id;
     const removingParam = req.query.removing as string | undefined;
@@ -439,7 +581,7 @@ const employeeUpdateSchema = z.object({
   roleId: z.string().nullable().optional(),
 });
 
-router.get("/api/v1/rbac/employees", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/rbac/employees", ...guard(RBAC_EMPLOYEES, "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const search = (req.query.search as string | undefined)?.trim();
     const searchFilter = search
@@ -486,7 +628,7 @@ router.get("/api/v1/rbac/employees", ...AUTH, async (req: AuthenticatedRequest, 
   }
 });
 
-router.post("/api/v1/rbac/employees", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.post("/api/v1/rbac/employees", ...guard(RBAC_EMPLOYEES, "write"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = employeeCreateSchema.parse(req.body);
     const isSuperAdmin = req.user!.role === "super_admin";
@@ -495,47 +637,40 @@ router.post("/api/v1/rbac/employees", ...AUTH, async (req: AuthenticatedRequest,
     let ancestorIds: mongoose.Types.ObjectId[] = [];
     let resolvedParentId: mongoose.Types.ObjectId | null = null;
 
+    // Resolved once. The three separate lookups this replaces could each have
+    // returned a different answer, and the role check quietly skipped itself
+    // when its own copy came back null.
+    const actor = isSuperAdmin ? null : await getEmployeeForUser(req.user!.id);
+    if (!isSuperAdmin && !actor) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
+    }
+
     if (data.parentEmployeeId) {
       const parent = await EmployeeModel.findById(data.parentEmployeeId).lean().exec() as unknown as LeanEmployee | null;
       if (!parent) throw new AppError(400, ERROR_CODES.BAD_REQUEST, "Parent employee not found.");
 
-      if (!isSuperAdmin) {
-        const currentEmployee = await getEmployeeForUser(req.user!.id);
-        if (!currentEmployee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
-        const descendantIds = await getDescendantIds(currentEmployee._id);
+      if (actor) {
+        const descendantIds = await getDescendantIds(actor._id);
         const allowedParentIds = [
-          currentEmployee._id.toString(),
+          actor._id.toString(),
           ...descendantIds.map((id) => id.toString()),
         ];
         if (!allowedParentIds.includes(parent._id.toString())) {
           throw new AppError(403, ERROR_CODES.FORBIDDEN, "Cannot assign this parent: outside your hierarchy.");
         }
-        createdBy = currentEmployee._id.toString();
+        createdBy = actor._id.toString();
       }
 
       ancestorIds = [...parent.ancestorIds, parent._id];
       resolvedParentId = parent._id;
-    } else if (!isSuperAdmin) {
-      const currentEmployee = await getEmployeeForUser(req.user!.id);
-      if (!currentEmployee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
-      createdBy = currentEmployee._id.toString();
-      ancestorIds = [...currentEmployee.ancestorIds, currentEmployee._id];
-      resolvedParentId = currentEmployee._id;
+    } else if (actor) {
+      createdBy = actor._id.toString();
+      ancestorIds = [...actor.ancestorIds, actor._id];
+      resolvedParentId = actor._id;
     }
 
-    if (data.roleId && !isSuperAdmin) {
-      const actor = await getEmployeeForUser(req.user!.id);
-      if (actor) {
-        const descendantIds = await getDescendantIds(actor._id);
-        const visibleRoleCreators = [
-          actor._id.toString(),
-          ...descendantIds.map((id) => id.toString()),
-        ];
-        const role = await RoleMasterModel.findById(data.roleId).lean().exec() as unknown as LeanRole | null;
-        if (role?.createdBy && !visibleRoleCreators.includes(role.createdBy)) {
-          throw new AppError(403, ERROR_CODES.FORBIDDEN, "Cannot assign a role outside your visible roles.");
-        }
-      }
+    if (data.roleId && actor) {
+      await assertRoleAssignable(actor._id.toString(), data.roleId);
     }
 
     const existingUser = await UserModel.findOne({ email: data.emailOffice }).lean().exec();
@@ -563,13 +698,23 @@ router.post("/api/v1/rbac/employees", ...AUTH, async (req: AuthenticatedRequest,
       updatedBy: req.user!.id,
     });
 
+    if (data.roleId) {
+      await auditRoleAssignment({
+        actorUserId: req.user!.id,
+        actorEmail: req.user!.email,
+        employeeId: String(employee._id),
+        before: null,
+        after: data.roleId,
+      });
+    }
+
     res.status(201).json(employee);
   } catch (error) {
     next(error);
   }
 });
 
-router.put("/api/v1/rbac/employees/:id", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.put("/api/v1/rbac/employees/:id", ...guard(RBAC_EMPLOYEES, "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = employeeUpdateSchema.parse(req.body);
     const isSuperAdmin = req.user!.role === "super_admin";
@@ -583,24 +728,46 @@ router.put("/api/v1/rbac/employees/:id", ...AUTH, async (req: AuthenticatedReque
     if (!isSuperAdmin) {
       const currentEmployee = await getEmployeeForUser(req.user!.id);
       if (!currentEmployee) throw new AppError(403, ERROR_CODES.FORBIDDEN, "No employee profile found.");
+
+      const isSelf = currentEmployee._id.toString() === existing._id.toString();
+
+      // Self is NOT in this list any more. Including it was the escalation
+      // hole: it let an admin aim the role-assignment path at their own row.
       const descendantIds = await getDescendantIds(currentEmployee._id);
-      const visibleIds = [
-        currentEmployee._id.toString(),
-        ...descendantIds.map((id) => id.toString()),
-      ];
-      if (!visibleIds.includes(existing._id.toString())) {
+      const subordinateIds = descendantIds.map((id) => id.toString());
+
+      if (!isSelf && !subordinateIds.includes(existing._id.toString())) {
         throw new AppError(403, ERROR_CODES.FORBIDDEN, "You do not have permission to edit this employee.");
       }
 
-      if (data.roleId) {
-        const role = await RoleMasterModel.findById(data.roleId).lean().exec() as unknown as LeanRole | null;
-        const visibleRoleCreators = [
-          currentEmployee._id.toString(),
-          ...descendantIds.map((id) => id.toString()),
-        ];
-        if (role?.createdBy && !visibleRoleCreators.includes(role.createdBy)) {
-          throw new AppError(403, ERROR_CODES.FORBIDDEN, "Cannot assign a role outside your visible roles.");
+      if (isSelf) {
+        // Editing your own profile is fine; editing your own privileges is the
+        // attack. Compared against the stored value rather than merely being
+        // present, because the admin panel posts the whole object back and
+        // refusing an unchanged field would block editing your own phone number.
+        const requestedRole = data.roleId === undefined ? undefined : (data.roleId ? String(data.roleId) : null);
+        const currentRole = existing.roleId ? String(existing.roleId) : null;
+        if (requestedRole !== undefined && requestedRole !== currentRole) {
+          throw new AppError(
+            403,
+            ERROR_CODES.FORBIDDEN,
+            "You cannot change your own role. Ask a super admin or your manager."
+          );
         }
+
+        if (data.emailOffice !== undefined && data.emailOffice !== existing.emailOffice) {
+          // emailOffice cascades into the User login address below, so allowing
+          // it would let an account move its own credentials.
+          throw new AppError(
+            403,
+            ERROR_CODES.FORBIDDEN,
+            "You cannot change your own office email — it is also your login address."
+          );
+        }
+      }
+
+      if (data.roleId) {
+        await assertRoleAssignable(currentEmployee._id.toString(), data.roleId);
       }
     }
 
@@ -628,13 +795,27 @@ router.put("/api/v1/rbac/employees/:id", ...AUTH, async (req: AuthenticatedReque
       await UserModel.findByIdAndUpdate(existing.userId, { email: data.emailOffice });
     }
 
+    if (data.roleId !== undefined) {
+      const before = existing.roleId ? String(existing.roleId) : null;
+      const after = data.roleId ? String(data.roleId) : null;
+      if (before !== after) {
+        await auditRoleAssignment({
+          actorUserId: req.user!.id,
+          actorEmail: req.user!.email,
+          employeeId: String(existing._id),
+          before,
+          after,
+        });
+      }
+    }
+
     res.json(updated);
   } catch (error) {
     next(error);
   }
 });
 
-router.get("/api/v1/rbac/employees/:id/cascade-impact", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/rbac/employees/:id/cascade-impact", ...guard(RBAC_EMPLOYEES, "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const empId = new mongoose.Types.ObjectId(req.params.id);
     const descendantIds = await getDescendantIds(empId);
@@ -644,7 +825,7 @@ router.get("/api/v1/rbac/employees/:id/cascade-impact", ...AUTH, async (req: Aut
   }
 });
 
-router.put("/api/v1/rbac/employees/:id/status", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.put("/api/v1/rbac/employees/:id/status", ...guard(RBAC_EMPLOYEES, "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const { isActive } = z.object({ isActive: z.boolean() }).parse(req.body);
     const isSuperAdmin = req.user!.role === "super_admin";
@@ -668,9 +849,14 @@ router.put("/api/v1/rbac/employees/:id/status", ...AUTH, async (req: Authenticat
     const descendantIds = await getDescendantIds(empId);
     const allAffected = [empId, ...descendantIds];
 
+    // Deactivating also locks access. Otherwise the seed's zero-grant backfill
+    // reads a disabled admin as "never configured" and restores the
+    // Administrator role on the next cold start — undoing the deactivation
+    // without anyone touching this endpoint. Reactivating clears the lock, so
+    // the two stay a single decision rather than two switches to remember.
     await EmployeeModel.updateMany(
       { _id: { $in: allAffected } },
-      { isActive, updatedBy: req.user!.id }
+      { isActive, accessLocked: !isActive, updatedBy: req.user!.id }
     );
 
     res.json({ success: true, affected: allAffected.length });
@@ -698,7 +884,7 @@ const taskUpdateSchema = z.object({
   dueDate: z.string().nullable().optional(),
 });
 
-router.get("/api/v1/rbac/tasks", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/rbac/tasks", ...guard(RBAC_TASKS, "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const search = (req.query.search as string | undefined)?.trim();
     const isSuperAdmin = req.user!.role === "super_admin";
@@ -752,7 +938,7 @@ router.get("/api/v1/rbac/tasks", ...AUTH, async (req: AuthenticatedRequest, res,
   }
 });
 
-router.get("/api/v1/rbac/tasks/assignees", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.get("/api/v1/rbac/tasks/assignees", ...guard(RBAC_TASKS, "read"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const isSuperAdmin = req.user!.role === "super_admin";
 
@@ -784,7 +970,7 @@ router.get("/api/v1/rbac/tasks/assignees", ...AUTH, async (req: AuthenticatedReq
   }
 });
 
-router.post("/api/v1/rbac/tasks", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.post("/api/v1/rbac/tasks", ...guard(RBAC_TASKS, "write"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = taskCreateSchema.parse(req.body);
     const isSuperAdmin = req.user!.role === "super_admin";
@@ -823,7 +1009,7 @@ router.post("/api/v1/rbac/tasks", ...AUTH, async (req: AuthenticatedRequest, res
   }
 });
 
-router.put("/api/v1/rbac/tasks/:id", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.put("/api/v1/rbac/tasks/:id", ...guard(RBAC_TASKS, "edit"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = taskUpdateSchema.parse(req.body);
     const existing = await RbacTaskModel.findOne({
@@ -862,7 +1048,7 @@ router.put("/api/v1/rbac/tasks/:id", ...AUTH, async (req: AuthenticatedRequest, 
   }
 });
 
-router.delete("/api/v1/rbac/tasks/:id", ...AUTH, async (req: AuthenticatedRequest, res, next) => {
+router.delete("/api/v1/rbac/tasks/:id", ...guard(RBAC_TASKS, "delete"), async (req: AuthenticatedRequest, res, next) => {
   try {
     const existing = await RbacTaskModel.findOne({
       _id: req.params.id,
