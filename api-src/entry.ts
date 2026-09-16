@@ -6,6 +6,7 @@ import { connectDatabase } from "../src/config/db";
 import { seedMenusIfEmpty } from "../src/modules/menu/menu.seed";
 import { seedRbacBaseline } from "../src/bootstrap/seed-rbac";
 import { seedSeoMeta } from "../src/modules/seo/seo.seed";
+import { seedCaseStudies } from "../src/modules/portfolio/portfolio-case-studies.seed";
 import { logger } from "../src/core/logging/logger";
 
 type CachedState = {
@@ -41,6 +42,17 @@ async function getApp(): Promise<Express> {
         await seedSeoMeta();
       } catch (err) {
         logger.warn("SEO seed skipped on cold start", { error: err });
+      }
+      try {
+        // The three bespoke case-study routes were deleted when their content
+        // moved into the CMS, so these rows ARE those pages now — without them
+        // /projects/ai-attendance and its siblings 404. seedPortfolioData()
+        // covers this, but only from src/main.ts behind ENABLE_SEED, which is
+        // not the deployed entry point. Insert-if-missing and never
+        // overwriting, so a later edit in the admin survives a redeploy.
+        await seedCaseStudies();
+      } catch (err) {
+        logger.error("Case study seed failed on cold start — those URLs will 404", { error: err });
       }
       return await createApp();
     })().catch((err) => {
