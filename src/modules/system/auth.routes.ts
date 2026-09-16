@@ -55,6 +55,9 @@ router.post("/api/v1/auth/login", loginRateLimiter, async (req, res, next) => {
         id: String(user.id),
         email: user.email,
         role: user.role,
+        // Derived from role by a virtual on the model, never stored. Sent so
+        // the client does not have to re-derive it and risk the two drifting.
+        isSuperAdmin: user.isSuperAdmin,
       },
     });
   } catch (error) {

@@ -1255,8 +1255,15 @@ var userSchema = new import_mongoose8.Schema(
     passwordHash: { type: String, required: true },
     role: { type: String, enum: ["super_admin", "admin"], required: true }
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+  }
 );
+userSchema.virtual("isSuperAdmin").get(function() {
+  return this.role === "super_admin";
+});
 var UserModel = import_mongoose8.default.models.User ?? import_mongoose8.default.model("User", userSchema);
 
 // src/middleware/swagger.ts
@@ -6034,7 +6041,10 @@ router9.post("/api/v1/auth/login", loginRateLimiter, async (req, res, next) => {
       user: {
         id: String(user.id),
         email: user.email,
-        role: user.role
+        role: user.role,
+        // Derived from role by a virtual on the model, never stored. Sent so
+        // the client does not have to re-derive it and risk the two drifting.
+        isSuperAdmin: user.isSuperAdmin
       }
     });
   } catch (error) {
