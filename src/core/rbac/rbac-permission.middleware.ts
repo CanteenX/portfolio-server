@@ -388,8 +388,37 @@ export async function buildRbacSnapshot(userId: string, role: string): Promise<R
     if (!permissions[menuUrl].includes(actionCode)) permissions[menuUrl].push(actionCode);
   }
 
+  // Include the ancestor chain of every granted screen, for navigation only.
+  //
+  // A group header such as `#portfolio` is a folder, not a screen: it has no
+  // page and nothing to authorise. Requiring each role to hold a separate grant
+  // on it meant the Administrator role — which granted 38 screens and zero
+  // group headers — rendered as three empty headings with 35 screens orphaned
+  // and unreachable from the sidebar. Every future role would have hit the
+  // same trap the moment someone forgot to tick a folder.
+  //
+  // Ancestors are added to allowedMenus ONLY. They are deliberately not added
+  // to `permissions`, so seeing a folder never grants an action on it; the
+  // server-side guards still answer from the role's real grants alone.
+  const parentById = new Map(
+    menus.map((m) => {
+      const typed = m as unknown as { _id: mongoose.Types.ObjectId; parentMenu?: mongoose.Types.ObjectId | null };
+      return [String(typed._id), typed.parentMenu ? String(typed.parentMenu) : null];
+    })
+  );
+  const visibleMenuIds = new Set(grantedMenuIds);
+  for (const id of grantedMenuIds) {
+    let parent = parentById.get(id) ?? null;
+    // Bounded walk: a corrupt parent cycle must not hang the request.
+    for (let depth = 0; parent && depth < 8; depth += 1) {
+      if (visibleMenuIds.has(parent)) break;
+      visibleMenuIds.add(parent);
+      parent = parentById.get(parent) ?? null;
+    }
+  }
+
   const allowedMenus = menus.filter((m) =>
-    grantedMenuIds.has(String((m as unknown as { _id: mongoose.Types.ObjectId })._id))
+    visibleMenuIds.has(String((m as unknown as { _id: mongoose.Types.ObjectId })._id))
   );
 
   return {

@@ -14,7 +14,7 @@
     "start": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo 'lint placeholder'",
-    "test": "tsx --test src/__tests__/module-routes.test.ts src/__tests__/security.test.ts src/__tests__/validation.test.ts src/__tests__/rbac-escalation.test.ts src/__tests__/rbac-module-enforce.test.ts src/__tests__/rbac-permission.test.ts src/__tests__/rbac-subset.test.ts src/__tests__/rbac-api-guard.test.ts src/__tests__/seed-rbac.test.ts",
+    "test": "tsx --test src/__tests__/module-routes.test.ts src/__tests__/security.test.ts src/__tests__/validation.test.ts src/__tests__/rbac-escalation.test.ts src/__tests__/rbac-module-enforce.test.ts src/__tests__/rbac-permission.test.ts src/__tests__/rbac-subset.test.ts src/__tests__/rbac-api-guard.test.ts src/__tests__/seed-rbac.test.ts src/__tests__/rbac-snapshot.test.ts",
     "test:unit": "tsx --test src/__tests__/module-routes.test.ts src/__tests__/security.test.ts src/__tests__/validation.test.ts",
     "test:rbac": "tsx --test src/__tests__/rbac-escalation.test.ts src/__tests__/rbac-module-enforce.test.ts src/__tests__/rbac-permission.test.ts src/__tests__/rbac-subset.test.ts src/__tests__/rbac-api-guard.test.ts src/__tests__/seed-rbac.test.ts",
     "test:integration": "tsx --test src/__tests__/integration.test.ts",

@@ -978,8 +978,23 @@ async function buildRbacSnapshot(userId, role) {
     if (!permissions[menuUrl]) permissions[menuUrl] = [];
     if (!permissions[menuUrl].includes(actionCode)) permissions[menuUrl].push(actionCode);
   }
+  const parentById = new Map(
+    menus.map((m) => {
+      const typed = m;
+      return [String(typed._id), typed.parentMenu ? String(typed.parentMenu) : null];
+    })
+  );
+  const visibleMenuIds = new Set(grantedMenuIds);
+  for (const id of grantedMenuIds) {
+    let parent = parentById.get(id) ?? null;
+    for (let depth = 0; parent && depth < 8; depth += 1) {
+      if (visibleMenuIds.has(parent)) break;
+      visibleMenuIds.add(parent);
+      parent = parentById.get(parent) ?? null;
+    }
+  }
   const allowedMenus = menus.filter(
-    (m) => grantedMenuIds.has(String(m._id))
+    (m) => visibleMenuIds.has(String(m._id))
   );
   return {
     permissions,
