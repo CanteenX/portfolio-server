@@ -38,7 +38,13 @@ const updateEventSchema = z.object({
 
 const listEventsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  // 500, not the generic 100. The calendar page asks for 500 to fill a month
+  // grid, and a cap of 100 rejected that request outright — every load
+  // answered 400 "Invalid calendar event list query" and the page showed
+  // "Failed to load calendar events" to everyone. Lowering the client to 100
+  // instead would have silently dropped events past the hundredth with no
+  // sign anything was missing. Still bounded; `from`/`to` narrow it further.
+  limit: z.coerce.number().int().min(1).max(500).default(50),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   status: z.enum(["scheduled", "cancelled"]).optional()
