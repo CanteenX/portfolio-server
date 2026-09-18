@@ -9,6 +9,7 @@ import { ActionTypeModel } from "../../modules/rbac/action-type.model";
 import { EmployeeModel } from "../../modules/rbac/employee.model";
 import { MenuMasterModel } from "../../modules/rbac/menu-master.model";
 import { RoleMasterModel } from "../../modules/rbac/role-master.model";
+import { SUPER_ADMIN_ONLY_MENUS } from "./super-admin-menus";
 
 /**
  * Menu-driven RBAC enforcement: user -> employee -> role -> permissions[menuId + actionTypeId].
@@ -382,6 +383,11 @@ export async function buildRbacSnapshot(userId: string, role: string): Promise<R
     const menuUrl = menuUrlById.get(String(entry.menuId));
     const actionCode = actionCodeById.get(String(entry.actionTypeId));
     if (!menuUrl || !actionCode) continue;
+    // Super-admin-only screens are refused by the server for this user no
+    // matter what the role says, so offering them would only produce a page of
+    // 403s. Dropped here — before they reach either the permission map or the
+    // menu list — so a stale grant cannot resurface them.
+    if (SUPER_ADMIN_ONLY_MENUS.has(menuUrl)) continue;
 
     grantedMenuIds.add(String(entry.menuId));
     if (!permissions[menuUrl]) permissions[menuUrl] = [];

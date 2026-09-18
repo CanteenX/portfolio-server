@@ -774,6 +774,13 @@ var roleMasterSchema = new import_mongoose5.Schema(
 roleMasterSchema.index({ clientCode: 1, roleName: 1 }, { unique: true });
 var RoleMasterModel = import_mongoose5.default.models.RoleMaster ?? import_mongoose5.default.model("RoleMaster", roleMasterSchema);
 
+// src/core/rbac/super-admin-menus.ts
+var SUPER_ADMIN_ONLY_MENUS = /* @__PURE__ */ new Set([
+  "/portfolio/legal",
+  "/settings/users",
+  "/settings/audit-log"
+]);
+
 // src/core/rbac/rbac-permission.middleware.ts
 var ACTION_CODES = ["read", "write", "edit", "delete", "print", "mail"];
 var LOOKUP_TTL_MS = 6e4;
@@ -974,6 +981,7 @@ async function buildRbacSnapshot(userId, role) {
     const menuUrl = menuUrlById.get(String(entry.menuId));
     const actionCode = actionCodeById.get(String(entry.actionTypeId));
     if (!menuUrl || !actionCode) continue;
+    if (SUPER_ADMIN_ONLY_MENUS.has(menuUrl)) continue;
     grantedMenuIds.add(String(entry.menuId));
     if (!permissions[menuUrl]) permissions[menuUrl] = [];
     if (!permissions[menuUrl].includes(actionCode)) permissions[menuUrl].push(actionCode);
@@ -16484,7 +16492,6 @@ var ACTION_NAMES = {
   print: "Print",
   mail: "Mail"
 };
-var SUPER_ADMIN_ONLY_MENUS = /* @__PURE__ */ new Set(["/portfolio/legal"]);
 var MENU_TREE = [
   {
     menuUrl: "#portfolio",

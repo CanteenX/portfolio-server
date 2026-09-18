@@ -51,19 +51,11 @@ type MenuSeed = {
  * MODULE_MENU_URL actually has a row here. A mapped module absent from this
  * tree is a guaranteed 403 for the whole module the moment enforcement is on.
  */
-/**
- * Menus that exist but are granted to nobody.
- *
- * `requireRbacPermission` bypasses only for super_admin, so a menu no role
- * holds a grant on is super-admin-only — that is the mechanism, not a side
- * effect. Listing a URL here keeps the backfill from handing it out, which is
- * the only reason a delegable menu becomes non-delegable.
- *
- * Legal documents are here because a published privacy policy is a statement
- * the business is bound by. Editing one is an owner decision, not something to
- * delegate along with the rest of the CMS.
- */
-export const SUPER_ADMIN_ONLY_MENUS = new Set<string>(["/portfolio/legal"]);
+// Moved to core so buildRbacSnapshot can use it without core depending on
+// bootstrap. Re-exported here because callers already import it from this
+// module. See core/rbac/super-admin-menus.ts for what membership means.
+export { SUPER_ADMIN_ONLY_MENUS } from "../core/rbac/super-admin-menus";
+import { SUPER_ADMIN_ONLY_MENUS } from "../core/rbac/super-admin-menus";
 
 export const MENU_TREE: MenuSeed[] = [
   {

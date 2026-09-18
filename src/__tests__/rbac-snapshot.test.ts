@@ -103,6 +103,18 @@ before(async () => {
     { email: "leaf@test.local", roleId, adminSecret: "snapshot_test_admin_secret" }
   );
   ids.actor = String(actor.userId);
+
+  // A role carrying a STALE grant on a super-admin-only screen — the live
+  // Administrator role's situation for Users and Audit Log.
+  const staleRoleId = await createRole({ RoleMasterModel }, "StaleGrant", [
+    { menuId: ids.users, actionTypeId: readAction },
+    { menuId: ids.projects, actionTypeId: readAction }
+  ]);
+  const stale = await createActor(
+    { UserModel, EmployeeModel },
+    { email: "stale@test.local", roleId: staleRoleId, adminSecret: "snapshot_test_admin_secret" }
+  );
+  ids.staleActor = String(stale.userId);
 });
 
 after(async () => {
@@ -145,5 +157,39 @@ describe("buildRbacSnapshot — navigation ancestors", () => {
       !urls.includes("#archive"),
       "a deactivated folder must stay hidden even when a granted screen sits under it"
     );
+  });
+});
+
+describe("buildRbacSnapshot — super-admin-only screens", () => {
+  it("hides a super-admin-only screen even when the role holds a stale grant on it", async () => {
+    const snap = await buildRbacSnapshot(ids.staleActor, "admin");
+    const urls = snap.allowedMenus.map((m) => m.menuUrl);
+    assert.ok(
+      !urls.includes("/settings/users"),
+      "the server refuses this screen for non-super-admins, so offering it yields only 403s"
+    );
+    assert.equal(
+      snap.permissions["/settings/users"],
+      undefined,
+      "and it must not appear in the permission map either"
+    );
+  });
+
+  it("does not surface a folder whose only granted child is super-admin-only", async () => {
+    const snap = await buildRbacSnapshot(ids.staleActor, "admin");
+    assert.ok(
+      !snap.allowedMenus.map((m) => m.menuUrl).includes("#settings"),
+      "an empty folder in the sidebar is the same bug with one less click"
+    );
+  });
+
+  it("still shows the role's legitimate screens alongside it", async () => {
+    const snap = await buildRbacSnapshot(ids.staleActor, "admin");
+    assert.deepEqual(snap.permissions["/portfolio/projects"], ["read"]);
+  });
+
+  it("gives a super admin every screen, super-admin-only ones included", async () => {
+    const snap = await buildRbacSnapshot(ids.staleActor, "super_admin");
+    assert.ok(snap.allowedMenus.map((m) => m.menuUrl).includes("/settings/users"));
   });
 });
